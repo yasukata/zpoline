@@ -100,7 +100,7 @@ long syscall_hook(int64_t a1, int64_t a2, int64_t a3,
 	}
 #endif
 	if (a1 == __NR_clone) {
-		if (a4 & CLONE_VM) { // pthread creation
+		if (a2 & CLONE_VM) { // pthread creation
 			/* push return address to the stack */
 			a3 -= sizeof(uint64_t);
 			*((uint64_t *) a3) = retptr;
