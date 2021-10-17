@@ -273,6 +273,8 @@ void ____asm_syscall_hook(void)
 	".globl asm_syscall_hook \n\t"
 	"asm_syscall_hook: \n\t"
 	"popq %rax \n\t" /* restore %rax saved in the trampoline code */
+	"cmpq $15, %rax \n\t" // rt_sigreturn
+	"je do_rt_sigreturn \n\t"
 	"movq (%rsp), %rcx \n\t"
 	"subq $16,%rsp \n\t"
 	"movq %rcx,8(%rsp) \n\t"
@@ -286,6 +288,9 @@ void ____asm_syscall_hook(void)
 	"call syscall_hook \n\t"
 	"addq $16,%rsp \n\t"
 	"retq \n\t"
+	"do_rt_sigreturn:"
+	"addq $8, %rsp \n\t"
+	"jmp syscall_addr \n\t"
 	);
 }
 
