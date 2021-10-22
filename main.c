@@ -276,6 +276,8 @@ void ____asm_syscall_hook(void)
 	"cmpq $15, %rax \n\t" // rt_sigreturn
 	"je do_rt_sigreturn \n\t"
 	"movq (%rsp), %rcx \n\t"
+	"pushq %rbp \n\t"
+	"movq %rsp, %rbp \n\t"
 	"subq $16,%rsp \n\t"
 	"movq %rcx,8(%rsp) \n\t"
 	"movq %r9,(%rsp) \n\t"
@@ -286,7 +288,7 @@ void ____asm_syscall_hook(void)
 	"movq %rdi, %rsi \n\t"
 	"movq %rax, %rdi \n\t"
 	"call syscall_hook \n\t"
-	"addq $16,%rsp \n\t"
+	"leaveq \n\t"
 	"retq \n\t"
 	"do_rt_sigreturn:"
 	"addq $8, %rsp \n\t"
