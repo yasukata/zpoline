@@ -29,6 +29,11 @@
 #include <sys/mman.h>
 #include <dis-asm.h>
 #include <sched.h>
+#include <dlfcn.h>
+
+static long (*hook_fn)(int64_t a1, int64_t a2, int64_t a3,
+		       int64_t a4, int64_t a5, int64_t a6,
+		       int64_t a7) = NULL;
 
 extern void syscall_addr(void);
 extern long enter_syscall(long number, ...);
@@ -53,73 +58,27 @@ void ___enter_syscall(void)
 	);
 }
 
-long syscall_hook(int64_t a1, int64_t a2, int64_t a3,
-		  int64_t a4, int64_t a5, int64_t a6,
-		  int64_t a7, int64_t retptr)
+long syscall_hook(int64_t rdi, int64_t rsi,
+		  int64_t rdx, int64_t __rcx __attribute__((unused)),
+		  int64_t r8, int64_t r9,
+		  int64_t r10_on_stack /* 4th arg for syscall */,
+		  int64_t rax_on_stack,
+		  int64_t retptr)
 {
-	long ret;
-	/*
-	 * here is our user-space system call hook.
-	 * a1 is the system call number, and
-	 * a2~a7 are the arguments passed to
-	 * the requested system call.
-	 *
-	 * retptr is the caller's address.
-	 * this is necessary to push it to
-	 * the stack of a newly created pthread.
-	 *
-	 * NOTE: we should pay attention to the use of
-	 * functions in the rewritten binaries including
-	 * libc and so on. that's why we use self-implemented
-	 * "enter_syscall" to print the example message below.
-	 *
-	 */
-#define DEMO 1
-#ifdef DEMO
-	/*
-	 * example of the system call hook function.
-	 * this prints a colored message if the system call is
-	 * one of read, write, open, and close.
-	 */
-	switch (a1) { /* system call number */
-	case __NR_read:
-		enter_syscall(__NR_write, 1 /* stdout */,
-			"\x1b[35msyscall hook: read system call\n\x1b[39m", 41);
-		break;
-	case __NR_write:
-		enter_syscall(__NR_write, 1 /* stdout */,
-			"\x1b[36msyscall hook: write system call\n\x1b[39m", 42);
-		break;
-	case __NR_open:
-		enter_syscall(__NR_write, 1 /* stdout */,
-			"\x1b[32msyscall hook: open system call\n\x1b[39m", 41);
-		break;
-	case __NR_close:
-		enter_syscall(__NR_write, 1 /* stdout */,
-			"\x1b[33msyscall hook: close system call\n\x1b[39m", 42);
-		break;
-	}
-#endif
-	if (a1 == __NR_clone) {
-		if (a2 & CLONE_VM) { // pthread creation
+	if (rax_on_stack == __NR_clone) {
+		if (rdi & CLONE_VM) { // pthread creation
 			/* push return address to the stack */
-			a3 -= sizeof(uint64_t);
-			*((uint64_t *) a3) = retptr;
+			rsi -= sizeof(uint64_t);
+			*((uint64_t *) rsi) = retptr;
 		}
 	}
 
-	/*
-	 * here enters the kernel context by using
-	 * the syscall instruction in enter_syscall.
-	 *
-	 * if you wish to emulate a system call,
-	 * you can do it here instead of calling enter_syscall.
-	 */
-	ret = enter_syscall(a1, a2, a3, a4, a5, a6, a7);
+	/* enter_syscall is used while hook_fn is not ready */
 
-	/* here, we can check the system call result stored in ret */
-
-	return ret;
+	if (hook_fn)
+		return hook_fn(rax_on_stack, rdi, rsi, rdx, r10_on_stack, r8, r9);
+	else
+		return enter_syscall(rax_on_stack, rdi, rsi, rdx, r10_on_stack, r8, r9);
 }
 
 struct disassembly_state {
@@ -263,11 +222,10 @@ void ____asm_syscall_hook(void)
 	 *
 	 * at the entry point of this,
 	 * the register values follow the calling convention
-	 * of the system calls. the following transforms
-	 * to the calling convention of the C functions.
+	 * of the system calls.
 	 *
-	 * we do this just for writing the hook in C.
-	 * so, this part would not be performance optimal.
+	 * this part is a bit complicated.
+	 * commit e5afaba has a bit simpler versoin.
 	 *
 	 */
 	asm volatile (
@@ -276,21 +234,51 @@ void ____asm_syscall_hook(void)
 	"popq %rax \n\t" /* restore %rax saved in the trampoline code */
 	"cmpq $15, %rax \n\t" // rt_sigreturn
 	"je do_rt_sigreturn \n\t"
-	"movq (%rsp), %rcx \n\t"
 	"pushq %rbp \n\t"
 	"movq %rsp, %rbp \n\t"
-	"subq $16,%rsp \n\t"
-	"movq %rcx,8(%rsp) \n\t"
-	"movq %r9,(%rsp) \n\t"
-	"movq %r8, %r9 \n\t"
-	"movq %r10, %r8 \n\t"
-	"movq %rdx, %rcx \n\t"
-	"movq %rsi, %rdx \n\t"
-	"movq %rdi, %rsi \n\t"
-	"movq %rax, %rdi \n\t"
-	"call syscall_hook \n\t"
+
+	/*
+	 * NOTE: for xmm register operations such as movaps
+	 * stack is expected to be aligned to a 16 byte boundary.
+	 */
+
+	"andq $-16, %rsp \n\t" // 16 byte stack alignment
+
+	/* assuming callee preserves r12-r15 and rbx  */
+
+	"pushq %r11 \n\t"
+	"pushq %r9 \n\t"
+	"pushq %r8 \n\t"
+	"pushq %rdi \n\t"
+	"pushq %rsi \n\t"
+	"pushq %rdx \n\t"
+	"pushq %rcx \n\t"
+
+	/* arguments for syscall_hook */
+
+	"pushq 8(%rbp) \n\t"	// return address
+	"pushq %rax \n\t"
+	"pushq %r10 \n\t"
+
+	/* up to here, stack has to be 16 byte aligned */
+
+	"callq syscall_hook \n\t"
+
+	"popq %r10 \n\t"
+	"addq $16, %rsp \n\t"	// discard arg7 and arg8
+
+	"popq %rcx \n\t"
+	"popq %rdx \n\t"
+	"popq %rsi \n\t"
+	"popq %rdi \n\t"
+	"popq %r8 \n\t"
+	"popq %r9 \n\t"
+	"popq %r11 \n\t"
+
 	"leaveq \n\t"
+
 	"retq \n\t"
+
 	"do_rt_sigreturn:"
 	"addq $8, %rsp \n\t"
 	"jmp syscall_addr \n\t"
@@ -318,7 +306,7 @@ static void setup_trampoline(void)
 	memset(mem, 0x90, NR_syscalls);
 
 	/* 
-	 * put the code to jump to asm_syscall_hook.
+	 * put code for jumping to asm_syscall_hook.
 	 *
 	 * here we embed the following code which jumps
 	 * to the address written on 0xff8
@@ -352,6 +340,40 @@ static void setup_trampoline(void)
 
 	/* finally, this sets the address of asm_syscall_hook at 0xff8 */
 	*(uint64_t *)(&((uint8_t *) mem)[0xff8]) = (uint64_t) asm_syscall_hook;
+
+	assert(!mprotect(0, 0x1000, PROT_READ | PROT_EXEC));
+}
+
+static void load_hook_lib(void)
+{
+	void *handle;
+	int (*hook_init)(void *);
+	const char *filename;
+
+	filename = getenv("LIBZPHOOK");
+	if (!filename) {
+		printf("-- env LIBZPHOOK is empty, so skip to load a hook library\n");
+		return;
+	}
+
+	printf("-- load %s\n", filename);
+
+	handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
+	if (!handle) {
+		printf("dlmopen failed for %s\n", filename);
+		printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS.\n");
+		printf("and, if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
+		exit(1);
+	}
+
+	hook_init = dlsym(handle, "__hook_init");
+	assert(hook_init);
+	printf("-- call hook init\n");
+	assert(hook_init(handle) == 0);
+
+	printf("-- set hook function\n");
+	hook_fn = dlsym(handle, "__hook_fn");
+	assert(hook_fn);
 }
 
 __attribute__((constructor(0xffff))) static void __zpoline_init(void)
@@ -364,6 +386,8 @@ __attribute__((constructor(0xffff))) static void __zpoline_init(void)
 	printf("-- Rewriting the code\n"); fflush(stdout);
 	rewrite_code();
 
-	printf("Zpoline initialization OK\n");
+	printf("Loading hook library ...\n"); fflush(stdout);
+	load_hook_lib();
+
 	printf("Start main program\n");
 }
