@@ -26,6 +26,8 @@ In a nutshell, Zpoline replaces the ```syscall``` and ```sysenter``` instruction
 
 For more technical details, please check [Documentation/README.md](Documentation/README.md).
 
+You can find a simpler version at commit ```e5afaba``` which does not use dlmopen.
+
 ## Target Platform
 
 Currently, this implementation assumes Linux on the x86-64 architecture.
@@ -38,9 +40,26 @@ Zpoline uses the disassembler in ```libopcodes``` that is part of binutils.
 $ sudo apt install binutils-dev
 ```
 
+## Files
+
+This example uses two shared libraries.
+
+1. ```apps/basic/libzphook_basic.so``` only implements the hook function. (we call the hook function library).
+2. ```libzpoline.so``` is loaded by LD_PRELOAD. This configures the trampoline code, conducts binary rewriting, and loads ```./apps/basic/libzphook_basic.so``` using dlmopen.
+
 ## Build
 
-Please simply type ```make``` in this directory, and it will generate a file named ```libzpoline.so```.
+To build ```apps/basic/libzphook_basic.so```, please type the following command.
+
+```
+$ make -C apps/basic
+```
+
+For ```libzpoline.so```, please type the following command.
+
+```
+$ make
+```
 
 ## Setup
 
@@ -52,57 +71,78 @@ $ sudo sh -c "echo 0 > /proc/sys/vm/mmap_min_addr"
 
 ## How to Use
 
-Please specify ```libzpoline.so``` for the ```LD_PRELOAD``` variable so that Zpoline's initialization procedure can perform binary rewriting before the main function of your program starts.
+Pleae specify ```apps/basic/libzphook_basic.so``` for the ```LIBZPHOOK``` environment variable, and ```libzpoline.so``` for LD_PRELOAD. The example command is as follows.
 
 ```
-$ LD_PRELOAD=./libzpoline.so [program you wish to run]
+$ LIBZPHOOK=./apps/basic/libzphook_basic.so LD_PRELOAD=./libzpoline.so [program you wish to run]
 ```
 
-The following is the example output.
+```LIBZPHOOK``` is defined in ```main.c``` of ```libzpoline.so```.
+```libzpoline.so``` performs dlmopen for a shared library file specified by ```LIBZPHOOK```.
+
+Currently, the hook function in ```apps/basic/libzphook_basic.so``` prints the system call number using printf. The following is the example output.
 
 ```
-$ LD_PRELOAD=./libzpoline.so ls
+$ LIBZPHOOK=./apps/basic/libzphook_basic.so LD_PRELOAD=./libzpoline.so /bin/ls
 Initializing Zpoline ...
 -- Setting up trampoline code
 -- Rewriting the code
-syscall hook: read system call
-syscall hook: read system call
-syscall hook: read system call
-syscall hook: read system call
-syscall hook: close system call
-syscall hook: write system call
-Zpoline initialization OK
-syscall hook: write system call
+Loading hook library ...
+-- load ./apps/basic/libzphook_basic.so
+-- call hook init
+output from __hook_init: we can do some init work here
+-- set hook function
+output from __hook_fn: syscall number 1
 Start main program
-syscall hook: close system call
-syscall hook: close system call
-syscall hook: close system call
-syscall hook: write system call
-.  ..  .git  libzpoline.so  LICENSE  main.c  main.o  Makefile  _moge  README.md
-syscall hook: close system call
+output from __hook_fn: syscall number 257
+output from __hook_fn: syscall number 5
+output from __hook_fn: syscall number 9
+output from __hook_fn: syscall number 3
+output from __hook_fn: syscall number 16
+output from __hook_fn: syscall number 16
+output from __hook_fn: syscall number 257
+output from __hook_fn: syscall number 5
+output from __hook_fn: syscall number 217
+output from __hook_fn: syscall number 217
+output from __hook_fn: syscall number 3
+output from __hook_fn: syscall number 1
+apps  Documentation  libzpoline.so  LICENSE  main.c  main.o  Makefile  README.md
+output from __hook_fn: syscall number 3
 ```
 
-The messages ```syscall hook: XXX system call``` are printed by the Zpoline-based system call hook.
+## Why do we need to separate files and load by dlmopen?
 
-## How to Develop A Zpoline-based System Call Hook
+Users of the Zpoline technique should pay attention to the use of rewritten functions, otherwise, the system call hook may fall into an infinite loop.
 
-In this repository, the function named ```syscall_hook``` in ```main.c``` is the system call hook.
-So, it is the part that you should change for implementing your own hook function.
+Let's think about the printf library call which internally invokes a write system call.
+When Zpoline is applied to the user-space program, the write system call triggered in printf will be hooked by Zpoline.
+The problem occurs when the system call hook calls printf.
+It will result in an infinite loop because the write system call in printf, called by the hook function, will be hooked and redirected to the same hook function.
 
-Firstable, if you remove the line ```#define DEMO 1``` or the corresponding ifdef part in ```main.c```,
-you can eliminate the output of the demo.
+dlmopen releases users of Zpoline from this issue.
 
-### Note
+The implementation of the hook function is ```__hook_fn``` in ```apps/basic/main.c```.
 
-Similar to other system call hook mechanisms such as the existing binary rewriting techniques and [Syscall User Dispatch](https://www.kernel.org/doc/html/latest/admin-guide/syscall-user-dispatch.html) (SUD),
-users of the Zpoline technique should pay attention to the use of functions called by the primary user-space program, otherwise, the system call hook may cause a deadlock.
+As mentioned above, the hook function may fall into an infinite loop when it uses a library call such as printf. But, in this example, the hook function (```__hook_fn```) can use printf.
 
-Let's say, we have a function named ```function_A``` which first acquires a lock, then invokes a system call, and finally releases the lock.
-When a user-space program calls ```function_A```, the system call in it will be hooked by Zpoline.
-The problem occurs when the system call hook also calls ```function_A```.
-It will result in a deadlock because the lock is not released in the first call of ```function_A```.
+This is realized by dlmopen. In ```libzpoline.so```, a function named ```load_hook_lib``` calls dlmopen and loads ```apps/basic/libzphook_basic.so```. In particular, ```load_hook_lib``` specifies ```LM_ID_NEWLM``` for dlmopen, and this requests to load ```apps/basic/libzphook_basic.so``` in a new namespace. At the same time, dlmopen also loads other required libraries including libc in the same namespace to which ```apps/basic/libzphook_basic.so``` belongs.
 
-Therefore, users of the Zpoline technique should assign dedicated in-memory assets to Zpoline-based system call hooks. For example, the demo program uses a self-implemented function ```enter_syscall``` rather than the ```syscall``` wrapper function in libc.
+Now, libc for ```__hook_fn``` is newly instantiated in the new namespace, and it is different from the one used by the primary user-space program. Here, ```libzpoline.so``` does not replace syscall and sysenter instructions in the newly instantiated libc. Therefore, ```__hook_fn``` does not cause an infinite loop.
+
+After ```apps/basic/libzphook_basic.so``` is loaded, ```libzpoline.so``` accesses ```__hook_fn``` in ```apps/basic/libzphook_basic.so``` through a pointer named ```hook_fn``` in this example.
+
+Note that dlmopen does not only load libc but also other shared libraries associated with the hook function library. The association is done by the compiler. If you forget to specify the library to link (e.g., ```-lpthread``` for libpthread, ```-lm``` for libmath) for the compiler, dlmopen may fail to load them.
+
+## How to Implement My Own System Call Hook
+
+Currently, ```libzpoline.so``` is independent of the hook function library. So, you can build your own hook function library, and to activate it, you only need to specify it to the ```LIBZPHOOK``` environment variable.
+
+In the hook function library, you should implement these two. 
+
+1. ```__hook_fn``` is the system call hook function.
+2. ```__hook_init``` is called just after trampoline code instantiation and binary rewriting are completed. We can use this for some specific initialization tasks.
+
+Please keep these function names so that dlsym in ```main.c``` can find your own implementations. Or, please change the argument for dlsym in ```load_hook_lib``` accordingly.
 
 ## Further Information
 
