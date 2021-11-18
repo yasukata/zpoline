@@ -59,19 +59,20 @@ long syscall_hook(int64_t a1, int64_t a2, int64_t a3,
 {
 	long ret;
 	/*
-	 * here is our user-space system call hook
+	 * here is our user-space system call hook.
 	 * a1 is the system call number, and
 	 * a2~a7 are the arguments passed to
 	 * the requested system call.
 	 *
 	 * retptr is the caller's address.
-	 * this is necessary to set push it to
+	 * this is necessary to push it to
 	 * the stack of a newly created pthread.
 	 *
-	 * NOTE: we should not use the functions of the
-	 * rewritten binaries including libc and so on.
-	 * that's why we use self-implemented "enter_syscall"
-	 * to print the example message below.
+	 * NOTE: we should pay attention to the use of
+	 * functions in the rewritten binaries including
+	 * libc and so on. that's why we use self-implemented
+	 * "enter_syscall" to print the example message below.
+	 *
 	 */
 #define DEMO 1
 #ifdef DEMO
@@ -262,7 +263,7 @@ void ____asm_syscall_hook(void)
 	 *
 	 * at the entry point of this,
 	 * the register values follow the calling convention
-	 * of the system calls. the following  transforms
+	 * of the system calls. the following transforms
 	 * to the calling convention of the C functions.
 	 *
 	 * we do this just for writing the hook in C.
@@ -317,7 +318,7 @@ static void setup_trampoline(void)
 	memset(mem, 0x90, NR_syscalls);
 
 	/* 
-	 * put code for jumping to asm_syscall_hook.
+	 * put the code to jump to asm_syscall_hook.
 	 *
 	 * here we embed the following code which jumps
 	 * to the address written on 0xff8
