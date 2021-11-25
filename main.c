@@ -360,9 +360,10 @@ static void load_hook_lib(void)
 
 	handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
 	if (!handle) {
-		printf("dlmopen failed for %s\n", filename);
-		printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS.\n");
-		printf("and, if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
+		printf("\n");
+		printf("dlmopen failed: %s\n", dlerror());
+		printf("\n");
+		printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
 		exit(1);
 	}
 
