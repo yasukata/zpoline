@@ -347,7 +347,7 @@ static void setup_trampoline(void)
 static void load_hook_lib(void)
 {
 	void *handle;
-	int (*hook_init)(void *);
+	int (*hook_init)(void);
 	const char *filename;
 
 	filename = getenv("LIBZPHOOK");
@@ -370,7 +370,7 @@ static void load_hook_lib(void)
 	hook_init = dlsym(handle, "__hook_init");
 	assert(hook_init);
 	printf("-- call hook init\n");
-	assert(hook_init(handle) == 0);
+	assert(hook_init() == 0);
 
 	printf("-- set hook function\n");
 	hook_fn = dlsym(handle, "__hook_fn");
