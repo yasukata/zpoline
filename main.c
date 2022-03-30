@@ -379,7 +379,7 @@ static void load_hook_lib(void)
 
 __attribute__((constructor(0xffff))) static void __zpoline_init(void)
 {
-	printf("Initializing Zpoline ...\n");
+	printf("Initializing zpoline ...\n");
 
 	printf("-- Setting up trampoline code\n"); fflush(stdout);
 	setup_trampoline();
