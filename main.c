@@ -420,40 +420,45 @@ static void setup_trampoline(void)
 	/* 
 	 * put code for jumping to asm_syscall_hook.
 	 *
-	 * here we embed the following code which jumps
-	 * to the address written on 0xff8
+	 * here we embed the following code.
 	 *
 	 * push   %rax
-	 * mov    $0xff8,%rax
-	 * jmpq   *(%rax)
+	 * movabs [asm_syscall_hook],%rax
+	 * jmpq   *%rax
 	 *
 	 */
 
 	/*
 	 * save %rax on stack before overwriting
-	 * with "mov $0xff8,%rax",
+	 * with "movabs [asm_syscall_hook],%rax",
 	 * and the saved value is resumed in asm_syscall_hook.
 	 */
 	// 50                      push   %rax
-	((uint8_t *) mem)[NR_syscalls + 0] = 0x50;
+	((uint8_t *) mem)[NR_syscalls + 0x0] = 0x50;
 
-	// 48 c7 c0 f8 0f 00 00    mov    $0xff8,%rax
-	((uint8_t *) mem)[NR_syscalls + 1] = 0x48;
-	((uint8_t *) mem)[NR_syscalls + 2] = 0xc7;
-	((uint8_t *) mem)[NR_syscalls + 3] = 0xc0;
-	((uint8_t *) mem)[NR_syscalls + 4] = 0xf8;
-	((uint8_t *) mem)[NR_syscalls + 5] = 0x0f;
-	((uint8_t *) mem)[NR_syscalls + 6] = 0x00;
-	((uint8_t *) mem)[NR_syscalls + 7] = 0x00;
+	// 48 b8 [64-bit addr (8-byte)]   movabs [asm_syscall_hook],%rax
+	((uint8_t *) mem)[NR_syscalls + 0x1] = 0x48;
+	((uint8_t *) mem)[NR_syscalls + 0x2] = 0xb8;
+	((uint8_t *) mem)[NR_syscalls + 0x3] = ((uint64_t) asm_syscall_hook >> (8 * 0)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x4] = ((uint64_t) asm_syscall_hook >> (8 * 1)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x5] = ((uint64_t) asm_syscall_hook >> (8 * 2)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x6] = ((uint64_t) asm_syscall_hook >> (8 * 3)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x7] = ((uint64_t) asm_syscall_hook >> (8 * 4)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x8] = ((uint64_t) asm_syscall_hook >> (8 * 5)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x9] = ((uint64_t) asm_syscall_hook >> (8 * 6)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0xa] = ((uint64_t) asm_syscall_hook >> (8 * 7)) & 0xff;
 
-	// ff 20                   jmpq   *(%rax)
-	((uint8_t *) mem)[NR_syscalls + 8] = 0xff;
-	((uint8_t *) mem)[NR_syscalls + 9] = 0x20;
+	// ff e0                   jmpq   *%rax
+	((uint8_t *) mem)[NR_syscalls + 0xb] = 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0xc] = 0xe0;
 
-	/* finally, this sets the address of asm_syscall_hook at 0xff8 */
-	*(uint64_t *)(&((uint8_t *) mem)[0xff8]) = (uint64_t) asm_syscall_hook;
-
-	assert(!mprotect(0, 0x1000, PROT_READ | PROT_EXEC));
+	/*
+	 * mprotect(PROT_EXEC without PROT_READ), executed
+	 * on CPUs supporting Memory Protection Keys for Userspace (PKU),
+	 * configures this memory region as eXecute-Only-Memory (XOM).
+	 * this enables to cause a segmentation fault for a NULL pointer access.
+	 */
+	assert(!mprotect(0, 0x1000, PROT_EXEC));
 }
 
 static void load_hook_lib(void)
