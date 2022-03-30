@@ -31,6 +31,97 @@
 #include <sched.h>
 #include <dlfcn.h>
 
+#define SUPPLEMENTAL__REWRITTEN_ADDR_CHECK 1
+
+#ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
+
+/*
+ * SUPPLEMENTAL: rewritten address check
+ *
+ * NOTE: this ifdef section is supplemental.
+ *       if you wish to quicly know the core
+ *       mechanism of zpoline, please skip here.
+ *
+ * the objective of this part is to terminate
+ * a null pointer function call.
+ *
+ * an example is shown below.
+ * --
+ * void (*null_fn)(void) = NULL;
+ *
+ * int main(void) {
+ *   null_fn();
+ *   return 0;
+ * }
+ * --
+ *
+ * usually, the code above will cause a segmentation
+ * fault because no memory is mapped to address 0 (NULL).
+ *
+ * however, zpoline maps memory to address 0. therefore, the
+ * code above continues to run without causing the fault.
+ *
+ * this behavior is unusual, thus, we wish to avoid this.
+ *
+ * our approach here is:
+ *
+ *   1. during the binrary rewriting phase, record
+ *      the addresses of the rewritten syscall/sysenter
+ *      instructions (record_replaced_instruction_addr).
+ *
+ *   2. in the hook function, we check wheter the caller's
+ *      address is the one that we conducted the rewriting
+ *      or not (is_replaced_instruction_addr).
+ *
+ *      if not, it means that the program reaches the hook
+ *      funtion without going through our replaced callq *%rax.
+ *      this typically occurs the program was like the example
+ *      code above. after we detect this type of irregular hook
+ *      entry, we terminate the program.
+ *
+ * the costs of this mechanism are:
+ *   - 1GB of memory to maintain a bitmap to cover entire
+ *     64-bit address space (replaced_instruction_addr_bitmap).
+ *   - bitmap operation at every hook entry, that includes
+ *     a small number of bit operations (is_replaced_instruction_addr).
+ */
+
+static void bitmap_set(char bm[], unsigned int val)
+{
+	bm[val >> 3] |= (1 << (val & 7));
+}
+
+static bool is_bitmap_set(char bm[], unsigned int val)
+{
+	return (bm[val >> 3] & (1 << (val & 7)) ? true : false);
+}
+
+/*
+ * we divide the 64-bit address range to two of 32-bit ranges
+ * so that we can save the required memory for the bitmap.
+ */
+struct addr64_bitmap { // 1GB in total
+	char h[0x20000000]; // for high 32-bit
+	char l[0x20000000]; // for low  32-bit
+};
+
+static struct addr64_bitmap replaced_instruction_addr_bitmap = { 0 };
+
+static void record_replaced_instruction_addr(uintptr_t addr)
+{
+	bitmap_set(replaced_instruction_addr_bitmap.h, addr >> 32);
+	bitmap_set(replaced_instruction_addr_bitmap.l, addr & 0xffffffff);
+}
+
+static bool is_replaced_instruction_addr(uintptr_t addr)
+{
+	return (is_bitmap_set(replaced_instruction_addr_bitmap.h, addr >> 32)
+		&& is_bitmap_set(replaced_instruction_addr_bitmap.l, addr & 0xffffffff)
+			? true : false);
+}
+
+#endif
+
 static long (*hook_fn)(int64_t a1, int64_t a2, int64_t a3,
 		       int64_t a4, int64_t a5, int64_t a6,
 		       int64_t a7) = NULL;
@@ -65,6 +156,24 @@ long syscall_hook(int64_t rdi, int64_t rsi,
 		  int64_t rax_on_stack,
 		  int64_t retptr)
 {
+#ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
+	/*
+	 * retptr is the caller's address, namely.
+	 * "supposedly", it should be callq *%rax that we replaced.
+	 */
+	if (!is_replaced_instruction_addr(retptr - 2 /* 2 is the size of syscall/sysenter */)) {
+		/*
+		 * here, we detected that the program comes here
+		 * without going through our replaced callq *%rax.
+		 *
+		 * this can should a bug of the program.
+		 *
+		 * therefore, we stop the program by int3.
+		 */
+		asm volatile ("int3");
+	}
+#endif
+
 	if (rax_on_stack == __NR_clone) {
 		if (rdi & CLONE_VM) { // pthread creation
 			/* push return address to the stack */
@@ -109,6 +218,9 @@ static int do_rewrite(void *data, const char *fmt, ...) {
 		}
 		ptr[0] = 0xff; // callq
 		ptr[1] = 0xd0; // *%rax
+#ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
+		record_replaced_instruction_addr((uintptr_t) ptr);
+#endif
 	}
 skip:
 	va_end(arg);
