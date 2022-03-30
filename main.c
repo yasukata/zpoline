@@ -327,10 +327,10 @@ void ____asm_syscall_hook(void)
 {
 	/*
 	 * asm_syscall_hook is the address where the
-	 * trampoline code first jumps to.
+	 * trampoline code first lands.
 	 *
 	 * the procedure below calls the C function
-	 * namded syscall_hook.
+	 * named syscall_hook.
 	 *
 	 * at the entry point of this,
 	 * the register values follow the calling convention
