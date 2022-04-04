@@ -126,8 +126,11 @@ extern void syscall_addr(void);
 extern long enter_syscall(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
 extern void asm_syscall_hook(void);
 
-void ___enter_syscall(void)
+void ____asm_impl(void)
 {
+	/*
+	 * enter_syscall triggers a kernel-space system call
+	 */
 	asm volatile (
 	".globl enter_syscall \n\t"
 	"enter_syscall: \n\t"
@@ -142,6 +145,77 @@ void ___enter_syscall(void)
 	"syscall_addr: \n\t"
 	"syscall \n\t"
 	"ret \n\t"
+	);
+
+	/*
+	 * asm_syscall_hook is the address where the
+	 * trampoline code first lands.
+	 *
+	 * the procedure below calls the C function
+	 * named syscall_hook.
+	 *
+	 * at the entry point of this,
+	 * the register values follow the calling convention
+	 * of the system calls.
+	 *
+	 * this part is a bit complicated.
+	 * commit e5afaba has a bit simpler versoin.
+	 *
+	 */
+	asm volatile (
+	".globl asm_syscall_hook \n\t"
+	"asm_syscall_hook: \n\t"
+	"popq %rax \n\t" /* restore %rax saved in the trampoline code */
+	"cmpq $15, %rax \n\t" // rt_sigreturn
+	"je do_rt_sigreturn \n\t"
+	"pushq %rbp \n\t"
+	"movq %rsp, %rbp \n\t"
+
+	/*
+	 * NOTE: for xmm register operations such as movaps
+	 * stack is expected to be aligned to a 16 byte boundary.
+	 */
+
+	"andq $-16, %rsp \n\t" // 16 byte stack alignment
+
+	/* assuming callee preserves r12-r15 and rbx  */
+
+	"pushq %r11 \n\t"
+	"pushq %r9 \n\t"
+	"pushq %r8 \n\t"
+	"pushq %rdi \n\t"
+	"pushq %rsi \n\t"
+	"pushq %rdx \n\t"
+	"pushq %rcx \n\t"
+
+	/* arguments for syscall_hook */
+
+	"pushq 8(%rbp) \n\t"	// return address
+	"pushq %rax \n\t"
+	"pushq %r10 \n\t"
+
+	/* up to here, stack has to be 16 byte aligned */
+
+	"callq syscall_hook \n\t"
+
+	"popq %r10 \n\t"
+	"addq $16, %rsp \n\t"	// discard arg7 and arg8
+
+	"popq %rcx \n\t"
+	"popq %rdx \n\t"
+	"popq %rsi \n\t"
+	"popq %rdi \n\t"
+	"popq %r8 \n\t"
+	"popq %r9 \n\t"
+	"popq %r11 \n\t"
+
+	"leaveq \n\t"
+
+	"retq \n\t"
+
+	"do_rt_sigreturn:"
+	"addq $8, %rsp \n\t"
+	"jmp syscall_addr \n\t"
 	);
 }
 
@@ -316,80 +390,6 @@ static void rewrite_code(void)
 	}
 
 	fclose(fp);
-}
-
-void ____asm_syscall_hook(void)
-{
-	/*
-	 * asm_syscall_hook is the address where the
-	 * trampoline code first lands.
-	 *
-	 * the procedure below calls the C function
-	 * named syscall_hook.
-	 *
-	 * at the entry point of this,
-	 * the register values follow the calling convention
-	 * of the system calls.
-	 *
-	 * this part is a bit complicated.
-	 * commit e5afaba has a bit simpler versoin.
-	 *
-	 */
-	asm volatile (
-	".globl asm_syscall_hook \n\t"
-	"asm_syscall_hook: \n\t"
-	"popq %rax \n\t" /* restore %rax saved in the trampoline code */
-	"cmpq $15, %rax \n\t" // rt_sigreturn
-	"je do_rt_sigreturn \n\t"
-	"pushq %rbp \n\t"
-	"movq %rsp, %rbp \n\t"
-
-	/*
-	 * NOTE: for xmm register operations such as movaps
-	 * stack is expected to be aligned to a 16 byte boundary.
-	 */
-
-	"andq $-16, %rsp \n\t" // 16 byte stack alignment
-
-	/* assuming callee preserves r12-r15 and rbx  */
-
-	"pushq %r11 \n\t"
-	"pushq %r9 \n\t"
-	"pushq %r8 \n\t"
-	"pushq %rdi \n\t"
-	"pushq %rsi \n\t"
-	"pushq %rdx \n\t"
-	"pushq %rcx \n\t"
-
-	/* arguments for syscall_hook */
-
-	"pushq 8(%rbp) \n\t"	// return address
-	"pushq %rax \n\t"
-	"pushq %r10 \n\t"
-
-	/* up to here, stack has to be 16 byte aligned */
-
-	"callq syscall_hook \n\t"
-
-	"popq %r10 \n\t"
-	"addq $16, %rsp \n\t"	// discard arg7 and arg8
-
-	"popq %rcx \n\t"
-	"popq %rdx \n\t"
-	"popq %rsi \n\t"
-	"popq %rdi \n\t"
-	"popq %r8 \n\t"
-	"popq %r9 \n\t"
-	"popq %r11 \n\t"
-
-	"leaveq \n\t"
-
-	"retq \n\t"
-
-	"do_rt_sigreturn:"
-	"addq $8, %rsp \n\t"
-	"jmp syscall_addr \n\t"
-	);
 }
 
 #define NR_syscalls (512) // bigger than max syscall number
