@@ -122,12 +122,8 @@ static bool is_replaced_instruction_addr(uintptr_t addr)
 
 #endif
 
-static long (*hook_fn)(int64_t a1, int64_t a2, int64_t a3,
-		       int64_t a4, int64_t a5, int64_t a6,
-		       int64_t a7) = NULL;
-
 extern void syscall_addr(void);
-extern long enter_syscall(long number, ...);
+extern long enter_syscall(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
 extern void asm_syscall_hook(void);
 
 void ___enter_syscall(void)
@@ -148,6 +144,10 @@ void ___enter_syscall(void)
 	"ret \n\t"
 	);
 }
+
+static long (*hook_fn)(int64_t a1, int64_t a2, int64_t a3,
+		       int64_t a4, int64_t a5, int64_t a6,
+		       int64_t a7) = enter_syscall;
 
 long syscall_hook(int64_t rdi, int64_t rsi,
 		  int64_t rdx, int64_t __rcx __attribute__((unused)),
@@ -182,12 +182,7 @@ long syscall_hook(int64_t rdi, int64_t rsi,
 		}
 	}
 
-	/* enter_syscall is used while hook_fn is not ready */
-
-	if (hook_fn)
-		return hook_fn(rax_on_stack, rdi, rsi, rdx, r10_on_stack, r8, r9);
-	else
-		return enter_syscall(rax_on_stack, rdi, rsi, rdx, r10_on_stack, r8, r9);
+	return hook_fn(rax_on_stack, rdi, rsi, rdx, r10_on_stack, r8, r9);
 }
 
 struct disassembly_state {
@@ -464,7 +459,7 @@ static void setup_trampoline(void)
 static void load_hook_lib(void)
 {
 	void *handle;
-	int (*hook_init)(void);
+	int (*hook_init)(long, ...);
 	const char *filename;
 
 	filename = getenv("LIBZPHOOK");
@@ -487,11 +482,13 @@ static void load_hook_lib(void)
 	hook_init = dlsym(handle, "__hook_init");
 	assert(hook_init);
 	printf("-- call hook init\n");
-	assert(hook_init() == 0);
-
-	printf("-- set hook function\n");
-	hook_fn = dlsym(handle, "__hook_fn");
-	assert(hook_fn);
+#ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
+	assert(hook_init(0, &hook_fn,
+			replaced_instruction_addr_bitmap.h,
+			replaced_instruction_addr_bitmap.l) == 0);
+#else
+	assert(hook_init(0, &hook_fn, NULL, NULL) == 0);
+#endif
 }
 
 __attribute__((constructor(0xffff))) static void __zpoline_init(void)
