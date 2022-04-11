@@ -144,6 +144,104 @@ In the hook function library, you should implement these two.
 
 Please keep these function names so that dlsym in ```main.c``` can find your own implementations. Or, please change the argument for dlsym in ```load_hook_lib``` accordingly.
 
+## Coping with NULL pointer exceptions
+
+Since zpoline uses address 0, that is normally considered NULL, by default, some NULL pointer errors do not cause a segmentation fault. The current version implements metigations for this issue.
+
+Mainly, we think about three cases, write to NULL, read from NULL, and execute the program at NULL.
+
+### 1. Write to NULL
+
+We wish to cause a segmentation fault when running the following exmaple program.
+
+```
+#include <stdio.h>
+#include <string.h>
+
+int main(int argc, char const* argv[])
+{
+	printf("write 0x90 to NULL\n");
+
+	printf("if memory is properly configured, this causes segfault\n");
+
+	memset(NULL, 0x90, 1);
+
+	printf("memory is not configured!\n");
+
+	return 0;
+}
+```
+
+The solution for this case is simple. We just use the mprotect system call without specifying PROT_WRITE.
+
+### 2. Read from NULL
+
+The next case is read access to NULL, and the example is shown below.
+
+
+```
+#include <stdio.h>
+#include <string.h>
+
+int main(int argc, char const* argv[])
+{
+	char c;
+
+	printf("read 1 byte from NULL\n");
+
+	printf("if XOM is properly configured, this causes segfault\n");
+
+	memcpy(&c, NULL, sizeof(c));
+
+	printf("XOM is not configured!\n");
+
+	printf("addr NULL has value : 0x%02x\n", c & 0xff);
+
+	return 0;
+}
+```
+
+Our solution is using eXecute-Only Memory (XOM). On Linux, when the CPU supports Intel PKU, the mprotect system call, that only specifies PROT_EXEC (meaning PROT_WRITE and PROT_READ are not specified), will configure the specified region as XOM.
+
+So, in summary, in zpoline, the protection aginst NULL read/write can be done by
+
+```
+mprotect(NULL, trampoline_code_size, PROT_EXEC);
+```
+
+### 3. Execute NULL (Unintentionally)
+
+We wish to trap unintended jump/call to the trampoline code at NULL. The example is below.
+
+```
+#include <stdio.h>
+
+static void (*dummy_function)(long, long, long) = NULL;
+
+int main(int argc, char const* argv[])
+{
+	printf("call function at NULL\n");
+
+	printf("normally, this causes segfault\n");
+
+	dummy_function(0, 0, 0); // this will be read(0, NULL, 0) for default zpoline
+
+	printf("NULL function is executed\n");
+
+	return 0;
+}
+```
+
+In zpoline, the address 0 (NULL) has the trampoline code, therefore, we cannot remove the executable flag from it.
+
+What we wish to do here is, to allow only our replaced ```callq *%rax``` to go through the trampoline code, and never allow for the other cases.
+
+Our solution is to
+- keep addresses of ```callq *%rax``` that we replaced in the rewriting phase.
+- check, at the entry point of the hook function, if the caller comes from our ```callq *%rax```.
+
+This implementation contains this check mechanism in the ifdef section named ```SUPPLEMENTAL__REWRITTEN_ADDR_CHECK```.
+
 ## Further Information
 
 You may be able to have a better understanding by checking the comments in the source code and [Documentation/README.md](Documentation/README.md).
