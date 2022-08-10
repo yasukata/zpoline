@@ -310,73 +310,71 @@ static void disassemble_and_rewrite(char *code, size_t code_size, int mem_prot)
 static void rewrite_code(void)
 {
 	FILE *fp;
-	char buf[4096];
-
 	/* get memory mapping information from procfs */
 	assert((fp = fopen("/proc/self/maps", "r")) != NULL);
-
-	while (fgets(buf, sizeof(buf), fp) != NULL) {
-		char addr[65];
-		int i = 0;
-		size_t j;
-		char *c;
-
-		/* we do not touch stack and vsyscall memory */
-		if (strstr(buf, "stack") != NULL || strstr(buf, "vsyscall") != NULL)
-			continue;
-
-		c = strtok(buf, " ");
-
-		while (c != NULL) {
-			switch (i) {
-			case 0:
-				strncpy(addr, c, sizeof(addr) - 1);
-				break;
-			case 1:
-				{
-					int mem_prot = 0;
-					for (j = 0; j < strlen(c); j++) {
-						if (c[j] == 'r')
-							mem_prot |= PROT_READ;
-						if (c[j] == 'w')
-							mem_prot |= PROT_WRITE;
-						if (c[j] == 'x')
-							mem_prot |= PROT_EXEC;
-					}
-					/* rewrite code if the memory is executable */
-					if (mem_prot & PROT_EXEC) {
-						size_t k;
-						int64_t from, to;
-						for (k = 0; k < strlen(addr); k++) {
-							if (addr[k] == '-') {
-								addr[k] = '\0';
-								break;
+	{
+		char buf[4096];
+		while (fgets(buf, sizeof(buf), fp) != NULL) {
+			/* we do not touch stack and vsyscall memory */
+			if (((strstr(buf, "stack") == NULL) && (strstr(buf, "vsyscall") == NULL))) {
+				int i = 0;
+				char addr[65] = { 0 };
+				char *c = strtok(buf, " ");
+				while (c != NULL) {
+					switch (i) {
+					case 0:
+						strncpy(addr, c, sizeof(addr) - 1);
+						break;
+					case 1:
+						{
+							int mem_prot = 0;
+							{
+								size_t j;
+								for (j = 0; j < strlen(c); j++) {
+									if (c[j] == 'r')
+										mem_prot |= PROT_READ;
+									if (c[j] == 'w')
+										mem_prot |= PROT_WRITE;
+									if (c[j] == 'x')
+										mem_prot |= PROT_EXEC;
+								}
+							}
+							/* rewrite code if the memory is executable */
+							if (mem_prot & PROT_EXEC) {
+								size_t k;
+								for (k = 0; k < strlen(addr); k++) {
+									if (addr[k] == '-') {
+										addr[k] = '\0';
+										break;
+									}
+								}
+								{
+									int64_t from, to;
+									from = strtol(&addr[0], NULL, 16);
+									if (from == 0) {
+										/*
+										 * this is trampoline code.
+										 * so skip it.
+										 */
+										break;
+									}
+									to = strtol(&addr[k + 1], NULL, 16);
+									disassemble_and_rewrite((char *) from,
+											(size_t) to - from,
+											mem_prot);
+								}
 							}
 						}
-						from = strtol(&addr[0], NULL, 16);
-						if (from == 0) {
-							/*
-							 * this is trampoline code.
-							 * so skip it.
-							 */
-							break;
-						}
-						to = strtol(&addr[k+1], NULL, 16);
-						disassemble_and_rewrite((char *) from,
-								(size_t) to - from,
-								mem_prot);
 						break;
 					}
+					if (i == 1)
+						break;
+					c = strtok(NULL, " ");
+					i++;
 				}
-				break;
 			}
-			if (i == 1)
-				break;
-			c = strtok(NULL, " ");
-			i++;
 		}
 	}
-
 	fclose(fp);
 }
 
@@ -447,34 +445,36 @@ static void setup_trampoline(void)
 static void load_hook_lib(void)
 {
 	void *handle;
-	int (*hook_init)(long, ...);
-	const char *filename;
+	{
+		const char *filename;
+		filename = getenv("LIBZPHOOK");
+		if (!filename) {
+			printf("-- env LIBZPHOOK is empty, so skip to load a hook library\n");
+			return;
+		}
 
-	filename = getenv("LIBZPHOOK");
-	if (!filename) {
-		printf("-- env LIBZPHOOK is empty, so skip to load a hook library\n");
-		return;
+		printf("-- load %s\n", filename);
+
+		handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
+		if (!handle) {
+			printf("\n");
+			printf("dlmopen failed: %s\n", dlerror());
+			printf("\n");
+			printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
+			exit(1);
+		}
 	}
-
-	printf("-- load %s\n", filename);
-
-	handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
-	if (!handle) {
-		printf("\n");
-		printf("dlmopen failed: %s\n", dlerror());
-		printf("\n");
-		printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
-		exit(1);
-	}
-
-	hook_init = dlsym(handle, "__hook_init");
-	assert(hook_init);
-	printf("-- call hook init\n");
+	{
+		int (*hook_init)(long, ...);
+		hook_init = dlsym(handle, "__hook_init");
+		assert(hook_init);
+		printf("-- call hook init\n");
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
-	assert(hook_init(0, &hook_fn, bm_mem) == 0);
+		assert(hook_init(0, &hook_fn, bm_mem) == 0);
 #else
-	assert(hook_init(0, &hook_fn, NULL, NULL) == 0);
+		assert(hook_init(0, &hook_fn) == 0);
 #endif
+	}
 }
 
 __attribute__((constructor(0xffff))) static void __zpoline_init(void)
