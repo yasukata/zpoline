@@ -79,12 +79,12 @@
  *      code above. after we detect this type of irregular hook
  *      entry, we terminate the program.
  *
- * the costs of this mechanism are:
- *   - 1GB of memory to maintain a bitmap to cover entire
- *     64-bit address space (replaced_instruction_addr_bitmap).
- *   - bitmap operation at every hook entry, that includes
- *     a small number of bit operations (is_replaced_instruction_addr).
+ * assuming 0xffffffffffff (256TB : ((1UL << 48) - 1)) as max virtual address (48-bit address)
+ *
  */
+
+#define BM_SIZE ((1UL << 48) >> 3)
+static char *bm_mem = NULL;
 
 static void bitmap_set(char bm[], unsigned int val)
 {
@@ -96,28 +96,16 @@ static bool is_bitmap_set(char bm[], unsigned int val)
 	return (bm[val >> 3] & (1 << (val & 7)) ? true : false);
 }
 
-/*
- * we divide the 64-bit address range to two of 32-bit ranges
- * so that we can save the required memory for the bitmap.
- */
-struct addr64_bitmap { // 1GB in total
-	char h[0x20000000]; // for high 32-bit
-	char l[0x20000000]; // for low  32-bit
-};
-
-static struct addr64_bitmap replaced_instruction_addr_bitmap = { 0 };
-
 static void record_replaced_instruction_addr(uintptr_t addr)
 {
-	bitmap_set(replaced_instruction_addr_bitmap.h, addr >> 32);
-	bitmap_set(replaced_instruction_addr_bitmap.l, addr & 0xffffffff);
+	assert(addr < (1UL << 48));
+	bitmap_set(bm_mem, addr);
 }
 
 static bool is_replaced_instruction_addr(uintptr_t addr)
 {
-	return (is_bitmap_set(replaced_instruction_addr_bitmap.h, addr >> 32)
-		&& is_bitmap_set(replaced_instruction_addr_bitmap.l, addr & 0xffffffff)
-			? true : false);
+	assert(addr < (1UL << 48));
+	return is_bitmap_set(bm_mem, addr);
 }
 
 #endif
@@ -483,9 +471,7 @@ static void load_hook_lib(void)
 	assert(hook_init);
 	printf("-- call hook init\n");
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
-	assert(hook_init(0, &hook_fn,
-			replaced_instruction_addr_bitmap.h,
-			replaced_instruction_addr_bitmap.l) == 0);
+	assert(hook_init(0, &hook_fn, bm_mem) == 0);
 #else
 	assert(hook_init(0, &hook_fn, NULL, NULL) == 0);
 #endif
@@ -494,6 +480,13 @@ static void load_hook_lib(void)
 __attribute__((constructor(0xffff))) static void __zpoline_init(void)
 {
 	printf("Initializing zpoline ...\n");
+
+#ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
+	assert((bm_mem = mmap(NULL, BM_SIZE,
+			PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+			-1, 0)) != MAP_FAILED);
+#endif
 
 	printf("-- Setting up trampoline code\n"); fflush(stdout);
 	setup_trampoline();
