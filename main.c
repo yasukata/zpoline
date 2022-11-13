@@ -86,12 +86,12 @@
 #define BM_SIZE ((1UL << 48) >> 3)
 static char *bm_mem = NULL;
 
-static void bitmap_set(char bm[], unsigned int val)
+static void bitmap_set(char bm[], unsigned long val)
 {
 	bm[val >> 3] |= (1 << (val & 7));
 }
 
-static bool is_bitmap_set(char bm[], unsigned int val)
+static bool is_bitmap_set(char bm[], unsigned long val)
 {
 	return (bm[val >> 3] & (1 << (val & 7)) ? true : false);
 }
