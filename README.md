@@ -1,4 +1,4 @@
-# zpoline: hooking system calls without pain
+# zpoline: system call hook for Linux
 
 zpoline is a novel system call hook mechanism that offers the following advantages.
 - 100 times faster than ptrace.
