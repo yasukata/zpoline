@@ -37,7 +37,7 @@ Currently, this implementation assumes Linux on the x86-64 architecture.
 zpoline uses the disassembler in ```libopcodes``` that is part of binutils.
 
 ```
-$ sudo apt install binutils-dev
+sudo apt install binutils-dev
 ```
 
 ## Files
@@ -52,13 +52,13 @@ This example uses two shared libraries.
 To build ```apps/basic/libzphook_basic.so```, please type the following command.
 
 ```
-$ make -C apps/basic
+make -C apps/basic
 ```
 
 For ```libzpoline.so```, please type the following command.
 
 ```
-$ make
+make
 ```
 
 ## Setup
@@ -66,7 +66,7 @@ $ make
 To use zpoline, please set 0 to ```/proc/sys/vm/mmap_min_addr```.
 
 ```
-$ sudo sh -c "echo 0 > /proc/sys/vm/mmap_min_addr"
+sudo sh -c "echo 0 > /proc/sys/vm/mmap_min_addr"
 ```
 
 ## How to Use
