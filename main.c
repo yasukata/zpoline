@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <assert.h>
 #include <sys/syscall.h>
 #include <sys/mman.h>
@@ -235,6 +236,9 @@ long syscall_hook(int64_t rdi, int64_t rsi,
 		asm volatile ("int3");
 	}
 #endif
+
+	if (rax_on_stack == __NR_clone3)
+		return -ENOSYS; /* workaround to trigger the fallback to clone */
 
 	if (rax_on_stack == __NR_clone) {
 		if (rdi & CLONE_VM) { // pthread creation
