@@ -155,6 +155,19 @@ void ____asm_impl(void)
 	".globl asm_syscall_hook \n\t"
 	"asm_syscall_hook: \n\t"
 	"popq %rax \n\t" /* restore %rax saved in the trampoline code */
+
+	/* discard pushed 0x90 for 0xeb 0x6a 0x90 if rax is n * 3 + 1 */
+	"pushq %rdi \n\t"
+	"pushq %rax \n\t"
+	"movabs $0xaaaaaaaaaaaaaaab, %rdi \n\t"
+	"imul %rdi, %rax \n\t"
+	"cmp %rdi, %rax \n\t"
+	"popq %rax \n\t"
+	"popq %rdi \n\t"
+	"jb skip_pop \n\t"
+	"addq $8, %rsp \n\t"
+	"skip_pop: \n\t"
+
 	"cmpq $15, %rax \n\t" // rt_sigreturn
 	"je do_rt_sigreturn \n\t"
 	"pushq %rbp \n\t"
@@ -399,8 +412,52 @@ static void setup_trampoline(void)
 		exit(1);
 	}
 
-	/* fill with nop 0x90 */
-	memset(mem, 0x90, NR_syscalls);
+	{
+		/*
+		 * optimized instructions to slide down
+		 * repeat of 0xeb 0x6a 0x90
+		 *
+		 * case 1 : jmp to n * 3 + 0
+		 * jmp 0x6a
+		 * nop
+		 * jmp 0x6a
+		 * nop
+		 *
+		 * case 2 : jmp to n * 3 + 1
+		 * push 0x90
+		 * jmp 0x6a
+		 * nop
+		 * jmp 0x6a
+		 *
+		 * case 3 : jmp to n * 3 + 2
+		 * nop
+		 * jmp 0x6a
+		 * nop
+		 * jmp 0x6a
+		 *
+		 * for case 2, we discard 0x90 pushed to stack
+		 *
+		 */
+		int i;
+		for (i = 0; i < NR_syscalls; i++) {
+			if (NR_syscalls - 0x6a - 2 < i)
+				((uint8_t *) mem)[i] = 0x90;
+			else {
+				int x = i % 3;
+				switch (x) {
+				case 0:
+					((uint8_t *) mem)[i] = 0xeb;
+					break;
+				case 1:
+					((uint8_t *) mem)[i] = 0x6a;
+					break;
+				case 2:
+					((uint8_t *) mem)[i] = 0x90;
+					break;
+				}
+			}
+		}
+	}
 
 	/* 
 	 * put code for jumping to asm_syscall_hook.
