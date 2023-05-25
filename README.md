@@ -12,7 +12,6 @@ Therefore, zpoline is a quite good option if you think...
 - you cannot anticipate the availability of the source code of your hook target.
 - you do not want to modify the OS kernel or install a kernel module.
 
-
 zpoline is categorized into binary rewriting, but you do not need to worry that your program binary files are overwritten. The setup procedure of zpoline rewrites the code binary *loaded on the memory*, just before the user-space program starts its main function. Therefore, it does not overwrite your program binary files.
 
 The cool part of zpoline is that it does not fail to hook system calls, which is difficult for existing binary rewriting techniques.
@@ -22,11 +21,9 @@ The overview is shown in the picture below.
 
 <img src="Documentation/img/zpoline.png" width="500px">
 
-In a nutshell, zpoline replaces the ```syscall``` and ```sysenter``` instructions with ```callq *%rax```, and crafts a tram**poline** code at virtual address 0 (**Z**ero). That is why this technique is named zpoline.
+In a nutshell, zpoline replaces the ```syscall``` and ```sysenter``` instructions with ```callq *%rax```, and crafts a tram**poline** code at virtual address 0 (**z**ero); this is why this technique is named zpoline.
 
-For more technical details, please check [Documentation/README.md](Documentation/README.md).
-
-You can find a simpler version at commit ```e5afaba``` which does not use dlmopen.
+For more technical details, please check the [Further Information](#further-information) section.
 
 ## Target Platform
 
@@ -109,24 +106,7 @@ apps  Documentation  libzpoline.so  LICENSE  main.c  main.o  Makefile  README.md
 output from hook_function: syscall number 3
 ```
 
-## Why do we need to separate files and load by dlmopen?
-
-Users of the zpoline technique should pay attention to the use of rewritten functions, otherwise, the system call hook may fall into an infinite loop.
-
-Let's think about the printf library call which internally invokes a write system call.
-When zpoline is applied to the user-space program, the write system call triggered in printf will be hooked by zpoline.
-The problem occurs when the system call hook calls printf.
-It will result in an infinite loop because the write system call in printf, called by the hook function, will be hooked and redirected to the same hook function.
-
-But, in this example, the hook function can use printf.
-
-This is realized by dlmopen. In ```libzpoline.so```, a function named ```load_hook_lib``` calls dlmopen and loads ```apps/basic/libzphook_basic.so```. In particular, ```load_hook_lib``` specifies ```LM_ID_NEWLM``` for dlmopen, and this requests to load ```apps/basic/libzphook_basic.so``` in a new namespace. At the same time, dlmopen also loads other required libraries including libc in the same namespace to which ```apps/basic/libzphook_basic.so``` belongs.
-
-Now, libc for ```apps/basic/libzphook_basic.so``` is newly instantiated in the new namespace, and it is different from the one used by the primary user-space program. Here, ```libzpoline.so``` does not replace syscall and sysenter instructions in the newly instantiated libc. Therefore, the functions implemented in ```apps/basic/libzphook_basic.so``` does not cause an infinite loop.
-
-Note that dlmopen does not only load libc but also other shared libraries associated with the hook function library. The association is done by the compiler. If you forget to specify the library to link (e.g., ```-lpthread``` for libpthread, ```-lm``` for libmath) for the compiler, dlmopen may fail to load them.
-
-## How to implement my own system call hook
+### How to implement my own system call hook
 
 Currently, ```libzpoline.so``` is independent of the hook function library. So, you can build your own hook function library, and to activate it, you only need to specify it to the ```LIBZPHOOK``` environment variable.
 
@@ -135,104 +115,22 @@ It will have the pointer to the hook function address as the argument, and by ov
 
 For details, please check ```apps/basic/main.c```.
 
-## Coping with NULL pointer exceptions
-
-Since zpoline uses address 0, that is normally considered NULL, by default, some NULL pointer errors do not cause a segmentation fault. The current version implements metigations for this issue.
-
-Mainly, we think about three cases, write to NULL, read from NULL, and execute the program at NULL.
-
-### 1. Write to NULL
-
-We wish to cause a segmentation fault when running the following exmaple program.
-
-```
-#include <stdio.h>
-#include <string.h>
-
-int main(int argc, char const* argv[])
-{
-	printf("write 0x90 to NULL\n");
-
-	printf("if memory is properly configured, this causes segfault\n");
-
-	memset(NULL, 0x90, 1);
-
-	printf("memory is not configured!\n");
-
-	return 0;
-}
-```
-
-The solution for this case is simple. We just use the mprotect system call without specifying PROT_WRITE.
-
-### 2. Read from NULL
-
-The next case is read access to NULL, and the example is shown below.
-
-
-```
-#include <stdio.h>
-#include <string.h>
-
-int main(int argc, char const* argv[])
-{
-	char c;
-
-	printf("read 1 byte from NULL\n");
-
-	printf("if XOM is properly configured, this causes segfault\n");
-
-	memcpy(&c, NULL, sizeof(c));
-
-	printf("XOM is not configured!\n");
-
-	printf("addr NULL has value : 0x%02x\n", c & 0xff);
-
-	return 0;
-}
-```
-
-Our solution is using eXecute-Only Memory (XOM). On Linux, when the CPU supports Intel PKU, the mprotect system call, that only specifies PROT_EXEC (meaning PROT_WRITE and PROT_READ are not specified), will configure the specified region as XOM.
-
-So, in summary, in zpoline, the protection aginst NULL read/write can be done by
-
-```
-mprotect(NULL, trampoline_code_size, PROT_EXEC);
-```
-
-### 3. Execute NULL (Unintentionally)
-
-We wish to trap unintended jump/call to the trampoline code at NULL. The example is below.
-
-```
-#include <stdio.h>
-
-static void (*dummy_function)(long, long, long) = NULL;
-
-int main(int argc, char const* argv[])
-{
-	printf("call function at NULL\n");
-
-	printf("normally, this causes segfault\n");
-
-	dummy_function(0, 0, 0); // this will be read(0, NULL, 0) for default zpoline
-
-	printf("NULL function is executed\n");
-
-	return 0;
-}
-```
-
-In zpoline, the address 0 (NULL) has the trampoline code, therefore, we cannot remove the executable flag from it.
-
-What we wish to do here is, to allow only our replaced ```callq *%rax``` to go through the trampoline code, and never allow for the other cases.
-
-Our solution is to
-- keep addresses of ```callq *%rax``` that we replaced in the rewriting phase.
-- check, at the entry point of the hook function, if the caller comes from our ```callq *%rax```.
-
-This implementation contains this check mechanism in the ifdef section named ```SUPPLEMENTAL__REWRITTEN_ADDR_CHECK```.
-
 ## Further Information
 
-You may be able to have a better understanding by checking the comments in the source code and [Documentation/README.md](Documentation/README.md).
+The following materials provide more information.
+
+### Paper
+
+A paper about zpoline appears at USENIX ATC 2023 ( [https://www.usenix.org/conference/atc23/presentation/yasukata](https://www.usenix.org/conference/atc23/presentation/yasukata) ).
+
+This paper includes a technical overview (Section 2) and comparison with other existing hook mechanisms (Section 1 and 3); for busy readers, the abstract of the paper summarises 1) advantages over the previous mechanisms, 2) the challenge that this work addresses, 3) the overview of the solution, and 4) rough numbers of the experiment results.
+
+We would appreciate it if you cite this paper when you refer to zpoline in your work.
+
+### Supplemental documentation in this repository
+
+[Documentation/README.md](Documentation/README.md) is supplemental documentation.
+
+### Comments in the source code
+
+The source code contains comments that explain how actually the system is implemented; these comments are the most detailed documentation currently we have.
