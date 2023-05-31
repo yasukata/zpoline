@@ -34,6 +34,12 @@
 
 #define SUPPLEMENTAL__REWRITTEN_ADDR_CHECK 1
 
+static int debug = 1;
+#define dprintf(fmt, ...)						\
+	if (debug) {							\
+	printf(fmt, ##__VA_ARGS__);					\
+	}
+
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 
 /*
@@ -514,7 +520,7 @@ static void load_hook_lib(void)
 			return;
 		}
 
-		printf("-- load %s\n", filename);
+		dprintf("-- load %s\n", filename);
 
 		handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
 		if (!handle) {
@@ -529,7 +535,7 @@ static void load_hook_lib(void)
 		int (*hook_init)(long, ...);
 		hook_init = dlsym(handle, "__hook_init");
 		assert(hook_init);
-		printf("-- call hook init\n");
+		dprintf("-- call hook init\n");
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 		assert(hook_init(0, &hook_fn, bm_mem) == 0);
 #else
@@ -540,7 +546,11 @@ static void load_hook_lib(void)
 
 __attribute__((constructor(0xffff))) static void __zpoline_init(void)
 {
-	printf("Initializing zpoline ...\n");
+	char *debug_env = getenv("ZPOLINE_DEBUG");
+	if (debug_env)
+		debug = atoi(debug_env);
+
+	dprintf("Initializing zpoline ...\n");
 
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 	assert((bm_mem = mmap(NULL, BM_SIZE,
@@ -549,14 +559,14 @@ __attribute__((constructor(0xffff))) static void __zpoline_init(void)
 			-1, 0)) != MAP_FAILED);
 #endif
 
-	printf("-- Setting up trampoline code\n"); fflush(stdout);
+	dprintf("-- Setting up trampoline code\n"); fflush(stdout);
 	setup_trampoline();
 
-	printf("-- Rewriting the code\n"); fflush(stdout);
+	dprintf("-- Rewriting the code\n"); fflush(stdout);
 	rewrite_code();
 
-	printf("Loading hook library ...\n"); fflush(stdout);
+	dprintf("Loading hook library ...\n"); fflush(stdout);
 	load_hook_lib();
 
-	printf("Start main program\n");
+	dprintf("Start main program\n");
 }
