@@ -273,7 +273,12 @@ struct disassembly_state {
  * this actually rewrites the code.
  * this is called by the disassembler.
  */
-static int do_rewrite(void *data, const char *fmt, ...) {
+#ifdef NEW_DIS_ASM
+static int do_rewrite(void *data, enum disassembler_style style ATTRIBUTE_UNUSED, const char *fmt, ...)
+#else
+static int do_rewrite(void *data, const char *fmt, ...)
+#endif
+{
 	struct disassembly_state *s = (struct disassembly_state *) data;
 	char buf[4096];
 	va_list arg;
@@ -308,7 +313,11 @@ static void disassemble_and_rewrite(char *code, size_t code_size, int mem_prot)
 	/* add PROT_WRITE to rewrite the code */
 	assert(!mprotect(code, code_size, PROT_WRITE | PROT_READ | PROT_EXEC));
 	disassemble_info disasm_info = { 0 };
+#ifdef NEW_DIS_ASM
+	init_disassemble_info(&disasm_info, &s, NULL, do_rewrite);
+#else
 	init_disassemble_info(&disasm_info, &s, do_rewrite);
+#endif
 	disasm_info.arch = bfd_arch_i386;
 	disasm_info.mach = bfd_mach_x86_64;
 	disasm_info.buffer = (bfd_byte *) code;
