@@ -314,7 +314,7 @@ static void disassemble_and_rewrite(char *code, size_t code_size, int mem_prot)
 	assert(!mprotect(code, code_size, PROT_WRITE | PROT_READ | PROT_EXEC));
 	disassemble_info disasm_info = { 0 };
 #ifdef NEW_DIS_ASM
-	init_disassemble_info(&disasm_info, &s, NULL, do_rewrite);
+	init_disassemble_info(&disasm_info, &s, (fprintf_ftype) printf, do_rewrite);
 #else
 	init_disassemble_info(&disasm_info, &s, do_rewrite);
 #endif
