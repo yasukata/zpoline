@@ -1,5 +1,27 @@
 # Supplemental documentation
 
+## The core idea (October 2021)
+
+zpoline is based on binary rewriting; it replaces ```syscall``` and ```sysenter```, which are two-byte instructions (```0x0f 0x05``` and ```0x0f 0x34``` in opcode respectively) that trigger a system call, to jump to an arbitrary hook function address.
+
+### Challenge and Goal
+
+The challenge of this work is that the two-byte space, originally occupied by a ```syscall```/```sysenter``` instruction, is too small to locate a ```jmp```/```call``` instruction along with an arbitrary destination address; typically, two bytes are occupied by the opcode of jmp/call and eight bytes are necessary for a 64-bit absolute address, or another possibility is one byte for a ```jmp```/```call``` instruction and four bytes of a 32-bit relative address. Due to this issue, existing binary rewriting techniques give up the replacement in some cases and fail to ensure exhaustive hooking, exceed the two-byte space originally occupied by ```syscall```/```sysenter``` to put the code bigger than two bytes while a jump to the exceeded part causes unexpected behavior, or take the int3 signaling approach that imposes a significant overhead. The goal of zpoline is to be free from these drawbacks.
+
+### Design
+
+The overview of zpoline is shown below.
+
+<img src="img/zpoline.png" width="500px">
+
+**System call and calling convention.** zpoline employs the calling convention of system calls. In UNIX-like systems on x86-64 CPUs, when a user-space program executes ```syscall```/```sysenter```, the context is switched into the kernel, then, a pre-configured system call handler is invoked. To request the kernel to execute a particular system call, a user-space program sets a system call number (e.g., 0 is ```read```, 1 is ```write```, and 2 is ```open``` in Linux on x86-64 CPUs) to the rax register before triggering a system call, and in the kernel, the system call handler executes one of the system calls according to the value of the rax register.
+
+**Binary rewriting.** To hook system calls, zpoline replaces ```syscall```/```sysenter``` with ```callq *%rax``` which is represented by two bytes 0xff 0xd0 in opcode. Since the instruction sizes of ```syscall```/```sysenter``` and ```callq *%rax``` are the same two bytes, the replacement does not break the neighbor instructions. What callq *%rax does is to push the current instruction pointer (the caller’s address) to the stack, and jump to the address stored in the rax register. Our insight is that, according to the calling convention, the rax register always has a system call number. Therefore, the consequence of ```callq *%rax``` is the jump to a virtual address between 0 and the maximum system call number which is more or less 500.
+
+**Trampoline code.** To redirect the execution to a user-defined hook function, zpoline instantiates the trampoline code at virtual address 0; in the trampoline code, the virtual address range between 0 and the maximum system call number is filled with the single-byte ```nop``` instruction (```0x90```), and at the next to the last ```nop``` instruction, a piece of code to jump to a particular hook function is located.
+
+**Execution flow.** After the trampoline code instantiation and binary rewriting are completed, the rewritten part (```callq *%rax```) will jump to one of the ```nop```s in the trampoline code while pushing the caller’s address on the stack. The execution slides down the subsequent ```nop```s; after executing the last ```nop```, it jumps to the hook function. Here, the hook function will have the same register state as the kernel-space system call handler. The return of the hook function jumps back to the caller address that is pushed on the stack by ```callq *%rax```.
+
 ## Use of dlmopen (November 2021)
 
 Users of the zpoline technique should pay attention to the use of rewritten functions, otherwise, the system call hook may fall into an infinite loop.
