@@ -538,7 +538,6 @@ static void load_hook_lib(void)
 		int (*hook_init)(long, ...);
 		hook_init = dlsym(handle, "__hook_init");
 		assert(hook_init);
-		printf("-- call hook init\n");
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 		assert(hook_init(0, &hook_fn, bm_mem) == 0);
 #else
@@ -549,23 +548,13 @@ static void load_hook_lib(void)
 
 __attribute__((constructor(0xffff))) static void __zpoline_init(void)
 {
-	printf("Initializing zpoline ...\n");
-
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 	assert((bm_mem = mmap(NULL, BM_SIZE,
 			PROT_READ | PROT_WRITE,
 			MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
 			-1, 0)) != MAP_FAILED);
 #endif
-
-	printf("-- Setting up trampoline code\n"); fflush(stdout);
 	setup_trampoline();
-
-	printf("-- Rewriting the code\n"); fflush(stdout);
 	rewrite_code();
-
-	printf("Loading hook library ...\n"); fflush(stdout);
 	load_hook_lib();
-
-	printf("Start main program\n");
 }
