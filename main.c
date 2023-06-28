@@ -416,8 +416,8 @@ static void setup_trampoline(void)
 			MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED,
 			-1, 0);
 	if (mem == MAP_FAILED) {
-		printf("map failed\n");
-		printf("NOTE: /proc/sys/vm/mmap_min_addr should be set 0\n");
+		fprintf(stderr, "map failed\n");
+		fprintf(stderr, "NOTE: /proc/sys/vm/mmap_min_addr should be set 0\n");
 		exit(1);
 	}
 
@@ -519,18 +519,14 @@ static void load_hook_lib(void)
 		const char *filename;
 		filename = getenv("LIBZPHOOK");
 		if (!filename) {
-			printf("-- env LIBZPHOOK is empty, so skip to load a hook library\n");
+			fprintf(stderr, "env LIBZPHOOK is empty, so skip to load a hook library\n");
 			return;
 		}
 
-		printf("-- load %s\n", filename);
-
 		handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
 		if (!handle) {
-			printf("\n");
-			printf("dlmopen failed: %s\n", dlerror());
-			printf("\n");
-			printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
+			fprintf(stderr, "dlmopen failed: %s\n\n", dlerror());
+			fprintf(stderr, "NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
 			exit(1);
 		}
 	}
