@@ -81,26 +81,19 @@ Currently, the hook function in ```apps/basic/libzphook_basic.so``` prints the s
 
 ```
 $ LIBZPHOOK=./apps/basic/libzphook_basic.so LD_PRELOAD=./libzpoline.so /bin/ls
-Initializing zpoline ...
--- Setting up trampoline code
--- Rewriting the code
-Loading hook library ...
--- load ./apps/basic/libzphook_basic.so
--- call hook init
 output from __hook_init: we can do some init work here
-output from hook_function: syscall number 1
-Start main program
 output from hook_function: syscall number 257
-output from hook_function: syscall number 5
+output from hook_function: syscall number 262
 output from hook_function: syscall number 9
 output from hook_function: syscall number 3
 output from hook_function: syscall number 16
 output from hook_function: syscall number 16
 output from hook_function: syscall number 257
-output from hook_function: syscall number 5
+output from hook_function: syscall number 262
 output from hook_function: syscall number 217
 output from hook_function: syscall number 217
 output from hook_function: syscall number 3
+output from hook_function: syscall number 262
 output from hook_function: syscall number 1
 apps  Documentation  libzpoline.so  LICENSE  main.c  main.o  Makefile  README.md
 output from hook_function: syscall number 3
