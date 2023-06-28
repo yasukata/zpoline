@@ -127,3 +127,8 @@ We would appreciate it if you cite this paper when you refer to zpoline in your 
 ### Comments in the source code
 
 The source code contains comments that explain how actually the system is implemented; these comments are the most detailed documentation currently we have.
+
+The starting point of the program (```main.c```) is ```__zpoline_init```, that is triggered by ```LD_PRELOAD```, and this executes the following functions:
+- ```setup_trampoline``` instantiates the trampoline code.
+- ```rewrite_code``` performs binary rewriting.
+- ```load_hook_lib``` loads the core library function using ```dlmopen```.
