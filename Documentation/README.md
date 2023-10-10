@@ -272,3 +272,202 @@ jmp 0x6a
 The thing we need to care about is that case 2 pushes the value 0x90 to the stack; to cope with this, we check the address, we landed at, and discard 0x90 on the stack when we find we come from n * 3 + 1 (case 2).
 
 After we apply this optimization, we run the same experiment done in Section 3.2 for Table 1 of the paper; as a result, we observed 10 ns as the hook overhead and this is 4 times faster than the previous version shown in the paper (41 ns is reported as the hook overhead).
+
+# Other materials
+
+## Trying Syscall User Dispatch (SUD)
+
+To try Syscall User Dispatch (SUD), please replace the content of ```zpoline/main.c``` with the following program.
+
+```c
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <signal.h>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
+
+#include <dlfcn.h>
+
+extern void syscall_addr(void);
+extern long enter_syscall(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+extern void asm_syscall_hook(void);
+
+extern void syscall_addr_end(void);
+
+static char sud_selector;
+
+void ____asm_impl(void)
+{
+	asm volatile (
+	".globl enter_syscall \n\t"
+	"enter_syscall: \n\t"
+	"movq %rdi, %rax \n\t"
+	"movq %rsi, %rdi \n\t"
+	"movq %rdx, %rsi \n\t"
+	"movq %rcx, %rdx \n\t"
+	"movq %r8, %r10 \n\t"
+	"movq %r9, %r8 \n\t"
+	"movq 8(%rsp),%r9 \n\t"
+	".globl syscall_addr \n\t"
+	"syscall_addr: \n\t"
+	"syscall \n\t"
+	"nop \n\t"
+	".globl syscall_addr_end \n\t"
+	"syscall_addr_end: \n\t"
+	"ret \n\t"
+	);
+
+	asm volatile (
+	".globl asm_syscall_hook \n\t"
+	"asm_syscall_hook: \n\t"
+
+	"pushq %rbp \n\t"
+	"movq %rsp, %rbp \n\t"
+
+	"andq $-16, %rsp \n\t" // 16 byte stack alignment
+
+	/* assuming callee preserves r12-r15 and rbx  */
+
+	"pushq %r11 \n\t"
+	"pushq %r9 \n\t"
+	"pushq %r8 \n\t"
+	"pushq %rdi \n\t"
+	"pushq %rsi \n\t"
+	"pushq %rdx \n\t"
+	"pushq %rcx \n\t"
+
+	/* arguments for syscall_hook */
+
+	"pushq 8(%rbp) \n\t"	// return address
+	"pushq %rax \n\t"
+	"pushq %r10 \n\t"
+
+	/* up to here, stack has to be 16 byte aligned */
+
+	"callq syscall_hook \n\t"
+
+	"popq %r10 \n\t"
+	"addq $16, %rsp \n\t"	// discard arg7 and arg8
+
+	"popq %rcx \n\t"
+	"popq %rdx \n\t"
+	"popq %rsi \n\t"
+	"popq %rdi \n\t"
+	"popq %r8 \n\t"
+	"popq %r9 \n\t"
+	"popq %r11 \n\t"
+
+	"leaveq \n\t"
+
+	"retq \n\t"
+	);
+}
+
+static long (*hook_fn)(int64_t a1, int64_t a2, int64_t a3,
+		       int64_t a4, int64_t a5, int64_t a6,
+		       int64_t a7) = enter_syscall;
+
+long syscall_hook(int64_t rdi, int64_t rsi,
+		  int64_t rdx, int64_t __rcx __attribute__((unused)),
+		  int64_t r8, int64_t r9,
+		  int64_t r10_on_stack /* 4th arg for syscall */,
+		  int64_t rax_on_stack,
+		  int64_t retptr)
+{
+	sud_selector = 0; /* allow */
+	if (rax_on_stack == __NR_clone) {
+		if (rdi & CLONE_VM) { // pthread creation
+			/* push return address to the stack */
+			rsi -= sizeof(uint64_t);
+			*((uint64_t *) rsi) = retptr;
+		}
+	}
+	long ret = hook_fn(rax_on_stack, rdi, rsi, rdx, r10_on_stack, r8, r9);
+	sud_selector = 1; /* block */
+	return ret;
+}
+
+static void load_hook_lib(void)
+{
+	void *handle;
+	{
+		const char *filename;
+		filename = getenv("LIBZPHOOK");
+		if (!filename) {
+			printf("env LIBZPHOOK is empty, so skip to load a hook library\n");
+			return;
+		}
+
+		handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
+		if (!handle) {
+			printf("\n");
+			printf("dlmopen failed: %s\n", dlerror());
+			printf("\n");
+			printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
+			exit(1);
+		}
+	}
+	{
+		int (*hook_init)(long, ...);
+		hook_init = dlsym(handle, "__hook_init");
+		assert(hook_init);
+		assert(hook_init(0, &hook_fn) == 0);
+	}
+}
+
+static void sig_h(int sig __attribute__((unused)), siginfo_t *si __attribute__((unused)), void *ptr)
+{
+	ucontext_t *uc = (ucontext_t *) ptr;
+	uc->uc_mcontext.gregs[REG_RSP] -= sizeof(uint64_t);
+	*((uint64_t *) (uc->uc_mcontext.gregs[REG_RSP])) = uc->uc_mcontext.gregs[REG_RIP];
+	uc->uc_mcontext.gregs[REG_RIP] = (uint64_t) asm_syscall_hook;
+	asm volatile(
+			"movq $0xf, %rax \n\t"
+			/* "leaveq \n\t"
+			 *
+			 * sud_benchmark.c in linux has this leaveq,
+			 * but wheter this is needed or not depends on the compiler;
+			 * this is needed if the compiler uses stack, and
+			 * not needed if it does not.
+			 * there seems to be a tendency that the compiler does not
+			 * use stack when we specify high-level compiler optimization. */
+			"add $0x8, %rsp \n\t"
+			"jmp syscall_addr \n\t"
+		    );
+}
+
+static void setup_signal_sud(void)
+{
+	struct sigaction sa = { 0 };
+	sa.sa_flags = SA_SIGINFO | SA_RESTART;
+	sa.sa_sigaction = sig_h;
+	assert(!sigemptyset(&sa.sa_mask));
+	assert(!sigaction(SIGSYS, &sa, NULL));
+
+	sud_selector = 0; /* allow */
+
+	assert(!prctl(59 /* set SUD */, 1 /* on */,
+				syscall_addr,
+				(syscall_addr_end - syscall_addr + 1),
+				&sud_selector));
+
+	sud_selector = 1; /* block */
+}
+
+__attribute__((constructor(0xffff))) static void __sud_init(void)
+{
+	load_hook_lib();
+	setup_signal_sud();
+}
+```
+
+Then, please compile it by ```make``` (using the same Makefile as ```zpoline/Makefile```).
+
+Afterward, supposedly, we can run the same command shown in the How to Use section (https://github.com/yasukata/zpoline#how-to-use), but the system calls will be hooked by the SUD feature.
