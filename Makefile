@@ -8,6 +8,7 @@ SRCDIR ?= ./
 
 NO_MAN=
 CFLAGS = -O3 -pipe
+CFLAGS += -g -rdynamic
 CFLAGS += -Werror -Wall -Wunused-function
 CFLAGS += -Wextra
 CFLAGS += -shared -fPIC
