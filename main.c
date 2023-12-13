@@ -156,18 +156,6 @@ void ____asm_impl(void)
 	"asm_syscall_hook: \n\t"
 	"popq %rax \n\t" /* restore %rax saved in the trampoline code */
 
-	/* discard pushed 0x90 for 0xeb 0x6a 0x90 if rax is n * 3 + 1 */
-	"pushq %rdi \n\t"
-	"pushq %rax \n\t"
-	"movabs $0xaaaaaaaaaaaaaaab, %rdi \n\t"
-	"imul %rdi, %rax \n\t"
-	"cmp %rdi, %rax \n\t"
-	"popq %rax \n\t"
-	"popq %rdi \n\t"
-	"jb skip_pop \n\t"
-	"addq $8, %rsp \n\t"
-	"skip_pop: \n\t"
-
 	"cmpq $15, %rax \n\t" // rt_sigreturn
 	"je do_rt_sigreturn \n\t"
 	"pushq %rbp \n\t"
@@ -192,7 +180,7 @@ void ____asm_impl(void)
 
 	/* arguments for syscall_hook */
 
-	"pushq 8(%rbp) \n\t"	// return address
+	"pushq 136(%rbp) \n\t"	// return address
 	"pushq %rax \n\t"
 	"pushq %r10 \n\t"
 
@@ -213,10 +201,12 @@ void ____asm_impl(void)
 
 	"leaveq \n\t"
 
+	"addq $128, %rsp \n\t"
+
 	"retq \n\t"
 
 	"do_rt_sigreturn:"
-	"addq $8, %rsp \n\t"
+	"addq $136, %rsp \n\t"
 	"jmp syscall_addr \n\t"
 	);
 }
@@ -284,6 +274,30 @@ static int do_rewrite(void *data, const char *fmt, ...)
 	va_list arg;
 	va_start(arg, fmt);
 	vsprintf(buf, fmt, arg);
+	if (strstr(buf, "(%rsp)") && !strncmp(buf, "-", 1)) {
+		int32_t off;
+		sscanf(buf, "%x(%%rsp)", &off);
+		if (-0x78 < off && off < -0x80) {
+			printf("\x1b[41mthis cannot be handled: %s\x1b[39m\n", buf);
+			assert(0);
+		} else if (off < -0x80) {
+			/* this is skipped */
+		} else {
+			off &= 0xff;
+			{
+				uint8_t *ptr = (uint8_t *)(((uintptr_t) s->code) + s->off);
+				{
+					int i;
+					for (i = 0; i < 16; i++) {
+						if (ptr[i] == 0x24 && ptr[i + 1] == off) {
+							ptr[i + 1] -= 8;
+							break;
+						}
+					}
+				}
+			}
+		}
+	} else
 	/* replace syscall and sysenter with callq *%rax */
 	if (!strncmp(buf, "syscall", 7) || !strncmp(buf, "sysenter", 8)) {
 		uint8_t *ptr = (uint8_t *)(((uintptr_t) s->code) + s->off);
@@ -422,50 +436,9 @@ static void setup_trampoline(void)
 	}
 
 	{
-		/*
-		 * optimized instructions to slide down
-		 * repeat of 0xeb 0x6a 0x90
-		 *
-		 * case 1 : jmp to n * 3 + 0
-		 * jmp 0x6a
-		 * nop
-		 * jmp 0x6a
-		 * nop
-		 *
-		 * case 2 : jmp to n * 3 + 1
-		 * push 0x90
-		 * jmp 0x6a
-		 * nop
-		 * jmp 0x6a
-		 *
-		 * case 3 : jmp to n * 3 + 2
-		 * nop
-		 * jmp 0x6a
-		 * nop
-		 * jmp 0x6a
-		 *
-		 * for case 2, we discard 0x90 pushed to stack
-		 *
-		 */
 		int i;
-		for (i = 0; i < NR_syscalls; i++) {
-			if (NR_syscalls - 0x6a - 2 < i)
-				((uint8_t *) mem)[i] = 0x90;
-			else {
-				int x = i % 3;
-				switch (x) {
-				case 0:
-					((uint8_t *) mem)[i] = 0xeb;
-					break;
-				case 1:
-					((uint8_t *) mem)[i] = 0x6a;
-					break;
-				case 2:
-					((uint8_t *) mem)[i] = 0x90;
-					break;
-				}
-			}
-		}
+		for (i = 0; i < NR_syscalls; i++)
+			((uint8_t *) mem)[i] = 0x90;
 	}
 
 	/* 
@@ -473,11 +446,22 @@ static void setup_trampoline(void)
 	 *
 	 * here we embed the following code.
 	 *
+	 * sub    $0x80,%rsp
 	 * push   %rax
 	 * movabs [asm_syscall_hook],%rax
 	 * jmpq   *%rax
 	 *
 	 */
+
+	/* preserve redzone */
+	// 48 81 ec 80 00 00 00    sub    $0x80,%rsp
+	((uint8_t *) mem)[NR_syscalls + 0x00] = 0x48;
+	((uint8_t *) mem)[NR_syscalls + 0x01] = 0x81;
+	((uint8_t *) mem)[NR_syscalls + 0x02] = 0xec;
+	((uint8_t *) mem)[NR_syscalls + 0x03] = 0x80;
+	((uint8_t *) mem)[NR_syscalls + 0x04] = 0x00;
+	((uint8_t *) mem)[NR_syscalls + 0x05] = 0x00;
+	((uint8_t *) mem)[NR_syscalls + 0x06] = 0x00;
 
 	/*
 	 * save %rax on stack before overwriting
@@ -485,23 +469,23 @@ static void setup_trampoline(void)
 	 * and the saved value is resumed in asm_syscall_hook.
 	 */
 	// 50                      push   %rax
-	((uint8_t *) mem)[NR_syscalls + 0x0] = 0x50;
+	((uint8_t *) mem)[NR_syscalls + 0x07] = 0x50;
 
 	// 48 b8 [64-bit addr (8-byte)]   movabs [asm_syscall_hook],%rax
-	((uint8_t *) mem)[NR_syscalls + 0x1] = 0x48;
-	((uint8_t *) mem)[NR_syscalls + 0x2] = 0xb8;
-	((uint8_t *) mem)[NR_syscalls + 0x3] = ((uint64_t) asm_syscall_hook >> (8 * 0)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x4] = ((uint64_t) asm_syscall_hook >> (8 * 1)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x5] = ((uint64_t) asm_syscall_hook >> (8 * 2)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x6] = ((uint64_t) asm_syscall_hook >> (8 * 3)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x7] = ((uint64_t) asm_syscall_hook >> (8 * 4)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x8] = ((uint64_t) asm_syscall_hook >> (8 * 5)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x9] = ((uint64_t) asm_syscall_hook >> (8 * 6)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0xa] = ((uint64_t) asm_syscall_hook >> (8 * 7)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x08] = 0x48;
+	((uint8_t *) mem)[NR_syscalls + 0x09] = 0xb8;
+	((uint8_t *) mem)[NR_syscalls + 0x0a] = ((uint64_t) asm_syscall_hook >> (8 * 0)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0b] = ((uint64_t) asm_syscall_hook >> (8 * 1)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0c] = ((uint64_t) asm_syscall_hook >> (8 * 2)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0d] = ((uint64_t) asm_syscall_hook >> (8 * 3)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0e] = ((uint64_t) asm_syscall_hook >> (8 * 4)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0f] = ((uint64_t) asm_syscall_hook >> (8 * 5)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x10] = ((uint64_t) asm_syscall_hook >> (8 * 6)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x11] = ((uint64_t) asm_syscall_hook >> (8 * 7)) & 0xff;
 
 	// ff e0                   jmpq   *%rax
-	((uint8_t *) mem)[NR_syscalls + 0xb] = 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0xc] = 0xe0;
+	((uint8_t *) mem)[NR_syscalls + 0x12] = 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x13] = 0xe0;
 
 	/*
 	 * mprotect(PROT_EXEC without PROT_READ), executed
