@@ -13,6 +13,8 @@ CFLAGS += -Werror -Wall -Wunused-function
 CFLAGS += -Wextra
 CFLAGS += -shared -fPIC
 
+CFLAGS += -DSUPPLEMENTAL__REWRITTEN_ADDR_CHECK
+
 LD_VERSION = $(shell ld --version | head -1 | awk '{print $$7}' | sed 's/\.//')
 # if version is 2.39 or newer, use new API
 ifeq ($(shell test $(LD_VERSION) -ge 239; echo $$?),0)
