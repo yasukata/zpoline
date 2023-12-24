@@ -32,8 +32,6 @@
 #include <sched.h>
 #include <dlfcn.h>
 
-#define SUPPLEMENTAL__REWRITTEN_ADDR_CHECK 1
-
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 
 /*
