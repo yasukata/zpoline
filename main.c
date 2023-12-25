@@ -152,7 +152,6 @@ void ____asm_impl(void)
 	asm volatile (
 	".globl asm_syscall_hook \n\t"
 	"asm_syscall_hook: \n\t"
-	"popq %rax \n\t" /* restore %rax saved in the trampoline code */
 
 	"cmpq $15, %rax \n\t" // rt_sigreturn
 	"je do_rt_sigreturn \n\t"
@@ -449,9 +448,8 @@ static void setup_trampoline(void)
 	 * here we embed the following code.
 	 *
 	 * sub    $0x80,%rsp
-	 * push   %rax
-	 * movabs [asm_syscall_hook],%rax
-	 * jmpq   *%rax
+	 * movabs [asm_syscall_hook],%r11
+	 * jmpq   *%r11
 	 *
 	 */
 
@@ -465,29 +463,22 @@ static void setup_trampoline(void)
 	((uint8_t *) mem)[NR_syscalls + 0x05] = 0x00;
 	((uint8_t *) mem)[NR_syscalls + 0x06] = 0x00;
 
-	/*
-	 * save %rax on stack before overwriting
-	 * with "movabs [asm_syscall_hook],%rax",
-	 * and the saved value is resumed in asm_syscall_hook.
-	 */
-	// 50                      push   %rax
-	((uint8_t *) mem)[NR_syscalls + 0x07] = 0x50;
+	// 49 bb [64-bit addr (8-byte)]    movabs [64-bit addr (8-byte)],%r11
+	((uint8_t *) mem)[NR_syscalls + 0x07] = 0x49;
+	((uint8_t *) mem)[NR_syscalls + 0x08] = 0xbb;
+	((uint8_t *) mem)[NR_syscalls + 0x09] = ((uint64_t) asm_syscall_hook >> (8 * 0)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0a] = ((uint64_t) asm_syscall_hook >> (8 * 1)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0b] = ((uint64_t) asm_syscall_hook >> (8 * 2)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0c] = ((uint64_t) asm_syscall_hook >> (8 * 3)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0d] = ((uint64_t) asm_syscall_hook >> (8 * 4)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0e] = ((uint64_t) asm_syscall_hook >> (8 * 5)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x0f] = ((uint64_t) asm_syscall_hook >> (8 * 6)) & 0xff;
+	((uint8_t *) mem)[NR_syscalls + 0x10] = ((uint64_t) asm_syscall_hook >> (8 * 7)) & 0xff;
 
-	// 48 b8 [64-bit addr (8-byte)]   movabs [asm_syscall_hook],%rax
-	((uint8_t *) mem)[NR_syscalls + 0x08] = 0x48;
-	((uint8_t *) mem)[NR_syscalls + 0x09] = 0xb8;
-	((uint8_t *) mem)[NR_syscalls + 0x0a] = ((uint64_t) asm_syscall_hook >> (8 * 0)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x0b] = ((uint64_t) asm_syscall_hook >> (8 * 1)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x0c] = ((uint64_t) asm_syscall_hook >> (8 * 2)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x0d] = ((uint64_t) asm_syscall_hook >> (8 * 3)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x0e] = ((uint64_t) asm_syscall_hook >> (8 * 4)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x0f] = ((uint64_t) asm_syscall_hook >> (8 * 5)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x10] = ((uint64_t) asm_syscall_hook >> (8 * 6)) & 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x11] = ((uint64_t) asm_syscall_hook >> (8 * 7)) & 0xff;
-
-	// ff e0                   jmpq   *%rax
+	// 41 ff e3                jmp    *%r11
+	((uint8_t *) mem)[NR_syscalls + 0x11] = 0x41;
 	((uint8_t *) mem)[NR_syscalls + 0x12] = 0xff;
-	((uint8_t *) mem)[NR_syscalls + 0x13] = 0xe0;
+	((uint8_t *) mem)[NR_syscalls + 0x13] = 0xe3;
 
 	/*
 	 * mprotect(PROT_EXEC without PROT_READ), executed
