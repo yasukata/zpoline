@@ -439,6 +439,10 @@ static void setup_trampoline(void)
 			((uint8_t *) mem)[i] = 0x90;
 	}
 
+	// optimization introduced by reviewer C
+	((uint8_t *) mem)[214 /* __NR_epoll_ctl_old */] = 0xeb; /* short jmp */
+	((uint8_t *) mem)[215 /* __NR_epoll_wait_old */] = 127; /* range of a short jmp : -128 ~ +127 */
+
 	/* 
 	 * put code for jumping to asm_syscall_hook.
 	 *
