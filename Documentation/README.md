@@ -275,33 +275,47 @@ After we apply this optimization, we run the same experiment done in Section 3.2
 
 # Other materials
 
-## Trying Syscall User Dispatch (SUD)
+## Hooking system calls with int3 and Syscall User Dispatch (SUD)
 
-To try Syscall User Dispatch (SUD), please replace the content of ```zpoline/main.c``` with the following program.
+To try int3 or Syscall User Dispatch (SUD), please replace the content of ```zpoline/main.c``` with the following program.
 
 ```c
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 
+#if !defined(MODE_SUD) && !defined(MODE_INT3)
+#error "either MODE_SUD or MODE_INT3 has to be defined"
+#elif defined(MODE_SUD) && defined(MODE_INT3)
+#error "MODE_SUD and MODE_INT3 should not be defined simultaneously"
+#endif
+
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <assert.h>
 #include <signal.h>
 #include <sched.h>
 #include <sys/syscall.h>
+#if defined(MODE_INT3)
+#include <string.h>
+#include <sys/mman.h>
+#include <dis-asm.h>
+#elif defined(MODE_SUD)
 #include <sys/prctl.h>
+#endif
 
 #include <dlfcn.h>
 
+#if defined(MODE_SUD)
+static char sud_selector;
+extern void syscall_addr_end(void);
+#endif
 extern void syscall_addr(void);
 extern long enter_syscall(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
 extern void asm_syscall_hook(void);
-
-extern void syscall_addr_end(void);
-
-static char sud_selector;
 
 void ____asm_impl(void)
 {
@@ -318,22 +332,22 @@ void ____asm_impl(void)
 	".globl syscall_addr \n\t"
 	"syscall_addr: \n\t"
 	"syscall \n\t"
-	"nop \n\t"
+#if defined(MODE_SUD)
 	".globl syscall_addr_end \n\t"
 	"syscall_addr_end: \n\t"
+#endif
 	"ret \n\t"
 	);
 
 	asm volatile (
 	".globl asm_syscall_hook \n\t"
 	"asm_syscall_hook: \n\t"
-
+	"cmpq $15, %rax \n\t"
+	"je do_rt_sigreturn \n\t"
 	"pushq %rbp \n\t"
 	"movq %rsp, %rbp \n\t"
 
-	"andq $-16, %rsp \n\t" // 16 byte stack alignment
-
-	/* assuming callee preserves r12-r15 and rbx  */
+	"andq $-16, %rsp \n\t"
 
 	"pushq %r11 \n\t"
 	"pushq %r9 \n\t"
@@ -343,18 +357,14 @@ void ____asm_impl(void)
 	"pushq %rdx \n\t"
 	"pushq %rcx \n\t"
 
-	/* arguments for syscall_hook */
-
-	"pushq 8(%rbp) \n\t"	// return address
+	"pushq 8(%rbp) \n\t"
 	"pushq %rax \n\t"
 	"pushq %r10 \n\t"
-
-	/* up to here, stack has to be 16 byte aligned */
 
 	"callq syscall_hook \n\t"
 
 	"popq %r10 \n\t"
-	"addq $16, %rsp \n\t"	// discard arg7 and arg8
+	"addq $16, %rsp \n\t"
 
 	"popq %rcx \n\t"
 	"popq %rdx \n\t"
@@ -364,9 +374,16 @@ void ____asm_impl(void)
 	"popq %r9 \n\t"
 	"popq %r11 \n\t"
 
+	"movq 8(%rbp), %rcx \n\t"
+
 	"leaveq \n\t"
 
-	"retq \n\t"
+	"addq $136, %rsp \n\t"
+	"jmp *%rcx \n\t"
+
+	"do_rt_sigreturn:"
+	"addq $136, %rsp \n\t"
+	"jmp syscall_addr \n\t"
 	);
 }
 
@@ -381,17 +398,200 @@ long syscall_hook(int64_t rdi, int64_t rsi,
 		  int64_t rax_on_stack,
 		  int64_t retptr)
 {
-	sud_selector = 0; /* allow */
+	/*
+	 * XXX: current impelementation of the SIGTRAP/SIGSYS handler
+	 * cannot co-exist with a user-defined SIGTRAP/SIGSYS handler.
+	 */
+	if (rax_on_stack == __NR_rt_sigaction
+#if defined(MODE_INT3)
+			&& rdi == SIGTRAP
+#elif defined(MODE_SUD)
+			&& rdi == SIGSYS
+#endif
+			) {
+		return 0;
+	}
+
+	if (rax_on_stack == __NR_rt_sigprocmask)
+		return 0;
+
+	if (rax_on_stack == __NR_clone3)
+		return -ENOSYS;
+
 	if (rax_on_stack == __NR_clone) {
-		if (rdi & CLONE_VM) { // pthread creation
-			/* push return address to the stack */
+		if (rdi & CLONE_VM) {
 			rsi -= sizeof(uint64_t);
 			*((uint64_t *) rsi) = retptr;
 		}
 	}
+#if defined(MODE_SUD)
+	sud_selector = 0; /* allow */
+#endif
 	long ret = hook_fn(rax_on_stack, rdi, rsi, rdx, r10_on_stack, r8, r9);
+#if defined(MODE_SUD)
 	sud_selector = 1; /* block */
+#endif
 	return ret;
+}
+
+#if defined(MODE_INT3)
+
+struct disassembly_state {
+	char *code;
+	size_t off;
+};
+
+#ifdef NEW_DIS_ASM
+static int do_rewrite(void *data, enum disassembler_style style ATTRIBUTE_UNUSED, const char *fmt, ...)
+#else
+static int do_rewrite(void *data, const char *fmt, ...)
+#endif
+{
+	struct disassembly_state *s = (struct disassembly_state *) data;
+	char buf[4096];
+	va_list arg;
+	va_start(arg, fmt);
+	vsprintf(buf, fmt, arg);
+	if (!strncmp(buf, "syscall", 7) || !strncmp(buf, "sysenter", 8)) {
+		uint8_t *ptr = (uint8_t *)(((uintptr_t) s->code) + s->off);
+		if ((uintptr_t) ptr == (uintptr_t) syscall_addr)
+			goto skip;
+		ptr[0] = 0xcc; // int3
+		ptr[1] = 0x90; // nop
+	}
+skip:
+	va_end(arg);
+	return 0;
+}
+
+static void disassemble_and_rewrite(char *code, size_t code_size, int mem_prot)
+{
+	struct disassembly_state s = { 0 };
+	assert(!mprotect(code, code_size, PROT_WRITE | PROT_READ | PROT_EXEC));
+	disassemble_info disasm_info = { 0 };
+#ifdef NEW_DIS_ASM
+	init_disassemble_info(&disasm_info, &s, (fprintf_ftype) printf, do_rewrite);
+#else
+	init_disassemble_info(&disasm_info, &s, do_rewrite);
+#endif
+	disasm_info.arch = bfd_arch_i386;
+	disasm_info.mach = bfd_mach_x86_64;
+	disasm_info.buffer = (bfd_byte *) code;
+	disasm_info.buffer_length = code_size;
+	disassemble_init_for_target(&disasm_info);
+	disassembler_ftype disasm;
+	disasm = disassembler(bfd_arch_i386, false, bfd_mach_x86_64, NULL);
+	s.code = code;
+	while (s.off < code_size)
+		s.off += disasm(s.off, &disasm_info);
+	assert(!mprotect(code, code_size, mem_prot));
+}
+
+static void rewrite_code(void)
+{
+	FILE *fp;
+	assert((fp = fopen("/proc/self/maps", "r")) != NULL);
+	{
+		char buf[4096];
+		while (fgets(buf, sizeof(buf), fp) != NULL) {
+			/* we do not touch stack and vsyscall memory */
+			if (((strstr(buf, "stack") == NULL) && (strstr(buf, "vsyscall") == NULL))) {
+				int i = 0;
+				char addr[65] = { 0 };
+				char *c = strtok(buf, " ");
+				while (c != NULL) {
+					switch (i) {
+					case 0:
+						strncpy(addr, c, sizeof(addr) - 1);
+						break;
+					case 1:
+						{
+							int mem_prot = 0;
+							{
+								size_t j;
+								for (j = 0; j < strlen(c); j++) {
+									if (c[j] == 'r')
+										mem_prot |= PROT_READ;
+									if (c[j] == 'w')
+										mem_prot |= PROT_WRITE;
+									if (c[j] == 'x')
+										mem_prot |= PROT_EXEC;
+								}
+							}
+							/* rewrite code if the memory is executable */
+							if (mem_prot & PROT_EXEC) {
+								size_t k;
+								for (k = 0; k < strlen(addr); k++) {
+									if (addr[k] == '-') {
+										addr[k] = '\0';
+										break;
+									}
+								}
+								{
+									int64_t from, to;
+									from = strtol(&addr[0], NULL, 16);
+									if (from == 0)
+										break;
+									to = strtol(&addr[k + 1], NULL, 16);
+									disassemble_and_rewrite((char *) from,
+											(size_t) to - from,
+											mem_prot);
+								}
+							}
+						}
+						break;
+					}
+					if (i == 1)
+						break;
+					c = strtok(NULL, " ");
+					i++;
+				}
+			}
+		}
+	}
+	fclose(fp);
+}
+#endif
+
+static void sig_h(int sig __attribute__((unused)), siginfo_t *si __attribute__((unused)), void *ptr)
+{
+	ucontext_t *uc = (ucontext_t *) ptr;
+	uc->uc_mcontext.gregs[REG_RSP] -= 128;
+	uc->uc_mcontext.gregs[REG_RSP] -= sizeof(uint64_t);
+#if defined(MODE_INT3)
+	*((uint64_t *) (uc->uc_mcontext.gregs[REG_RSP])) = uc->uc_mcontext.gregs[REG_RIP] + 1;
+#elif defined(MODE_SUD)
+	*((uint64_t *) (uc->uc_mcontext.gregs[REG_RSP])) = uc->uc_mcontext.gregs[REG_RIP];
+#endif
+	uc->uc_mcontext.gregs[REG_RIP] = (uint64_t) asm_syscall_hook;
+	asm volatile(
+	"movq $0xf, %rax \n\t"
+	"add $0x8, %rsp \n\t"
+	"jmp syscall_addr \n\t"
+	);
+}
+
+static void setup_signal(void)
+{
+	struct sigaction sa = { 0 };
+	sa.sa_flags = SA_SIGINFO | SA_RESTART;
+	sa.sa_sigaction = sig_h;
+	assert(!sigemptyset(&sa.sa_mask));
+	assert(!sigaddset(&sa.sa_mask, SIGTRAP));
+#if defined(MODE_INT3)
+	assert(!sigaction(SIGTRAP, &sa, NULL));
+#elif defined(MODE_SUD)
+	assert(!sigaction(SIGSYS, &sa, NULL));
+
+	sud_selector = 0; /* allow */
+
+	assert(!prctl(59 /* set SUD */, 1 /* on */,
+				syscall_addr,
+				(syscall_addr_end - syscall_addr + 1),
+				&sud_selector));
+
+	sud_selector = 1; /* block */
+#endif
 }
 
 static void load_hook_lib(void)
@@ -401,16 +601,14 @@ static void load_hook_lib(void)
 		const char *filename;
 		filename = getenv("LIBZPHOOK");
 		if (!filename) {
-			printf("env LIBZPHOOK is empty, so skip to load a hook library\n");
+			fprintf(stderr, "env LIBZPHOOK is empty, so skip to load a hook library\n");
 			return;
 		}
 
 		handle = dlmopen(LM_ID_NEWLM, filename, RTLD_NOW | RTLD_LOCAL);
 		if (!handle) {
-			printf("\n");
-			printf("dlmopen failed: %s\n", dlerror());
-			printf("\n");
-			printf("NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
+			fprintf(stderr, "dlmopen failed: %s\n\n", dlerror());
+			fprintf(stderr, "NOTE: this may occur when the compilation of your hook function library misses some specifications in LDFLAGS. or if you are using a C++ compiler, dlmopen may fail to find a symbol, and adding 'extern \"C\"' to the definition may resolve the issue.\n");
 			exit(1);
 		}
 	}
@@ -422,52 +620,31 @@ static void load_hook_lib(void)
 	}
 }
 
-static void sig_h(int sig __attribute__((unused)), siginfo_t *si __attribute__((unused)), void *ptr)
+__attribute__((constructor(0xffff))) static void __zpoline_init(void)
 {
-	ucontext_t *uc = (ucontext_t *) ptr;
-	uc->uc_mcontext.gregs[REG_RSP] -= sizeof(uint64_t);
-	*((uint64_t *) (uc->uc_mcontext.gregs[REG_RSP])) = uc->uc_mcontext.gregs[REG_RIP];
-	uc->uc_mcontext.gregs[REG_RIP] = (uint64_t) asm_syscall_hook;
-	asm volatile(
-			"movq $0xf, %rax \n\t"
-			/* "leaveq \n\t"
-			 *
-			 * sud_benchmark.c in linux has this leaveq,
-			 * but wheter this is needed or not depends on the compiler;
-			 * this is needed if the compiler uses stack, and
-			 * not needed if it does not.
-			 * there seems to be a tendency that the compiler does not
-			 * use stack when we specify high-level compiler optimization. */
-			"add $0x8, %rsp \n\t"
-			"jmp syscall_addr \n\t"
-		    );
-}
-
-static void setup_signal_sud(void)
-{
-	struct sigaction sa = { 0 };
-	sa.sa_flags = SA_SIGINFO | SA_RESTART;
-	sa.sa_sigaction = sig_h;
-	assert(!sigemptyset(&sa.sa_mask));
-	assert(!sigaction(SIGSYS, &sa, NULL));
-
-	sud_selector = 0; /* allow */
-
-	assert(!prctl(59 /* set SUD */, 1 /* on */,
-				syscall_addr,
-				(syscall_addr_end - syscall_addr + 1),
-				&sud_selector));
-
-	sud_selector = 1; /* block */
-}
-
-__attribute__((constructor(0xffff))) static void __sud_init(void)
-{
+	setup_signal();
+#if defined(MODE_INT3)
+	rewrite_code();
+#endif
 	load_hook_lib();
-	setup_signal_sud();
 }
 ```
 
-Then, please compile it by ```make``` (using the same Makefile as ```zpoline/Makefile```).
+Afterward, please edit ```zpoline/Makefile``` to add either ```-DMODE_INT3``` or ```-DMODE_SUD``` to ```CFLAGS```.
+(It is also fine to directly add ```#define MODE_INT3``` or ```#define MODE_SUD``` in the code above.)
 
-Afterward, supposedly, we can run the same command shown in the How to Use section (https://github.com/yasukata/zpoline#how-to-use), but the system calls will be hooked by the SUD feature.
+If you wish to try int3-based hook, please add the following in ```zpoline/Makefile```.
+
+```
+CFLAGS += -DMODE_INT3
+```
+
+If you wish to try SUD-based hook, please add the following in ```zpoline/Makefile```.
+
+```
+CFLAGS += -DMODE_SUD
+```
+
+Then, please compile it by ```make```.
+
+Afterward, supposedly, we can run the same command shown in the How to Use section (https://github.com/yasukata/zpoline#how-to-use) while the system calls are hooked by the signal handler for either SIGTRAP (int3) or SIGSYS (SUD).
