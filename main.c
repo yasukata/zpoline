@@ -184,7 +184,7 @@ void ____asm_impl(void)
 
 	/* up to here, stack has to be 16 byte aligned */
 
-	"callq syscall_hook \n\t"
+	"callq syscall_hook@plt \n\t"
 
 	"popq %r10 \n\t"
 	"addq $16, %rsp \n\t"	// discard arg7 and arg8
