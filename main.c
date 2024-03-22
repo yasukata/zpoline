@@ -31,7 +31,6 @@
 #include <dis-asm.h>
 #include <sched.h>
 #include <dlfcn.h>
-#include <linux/sched.h> /* struct clone_args for clone3 */
 
 #ifdef SUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 
@@ -237,11 +236,11 @@ long syscall_hook(int64_t rdi, int64_t rsi,
 		asm volatile ("int3");
 	}
 #endif
-	if (rax_on_stack == __NR_clone3) {
-		struct clone_args *ca = (struct clone_args *) rdi;
-		if (ca->flags & CLONE_VM) {
-			ca->stack_size -= sizeof(uint64_t);
-			*((uint64_t *) (ca->stack + ca->stack_size)) = retptr;
+	if (rax_on_stack == 435 /* __NR_clone3 */) {
+		uint64_t *ca = (uint64_t *) rdi; /* struct clone_args */
+		if (ca[0] /* flags */ & CLONE_VM) {
+			ca[6] /* stack_size */ -= sizeof(uint64_t);
+			*((uint64_t *) (ca[5] /* stack */ + ca[6] /* stack_size */)) = retptr;
 		}
 	}
 
