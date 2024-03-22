@@ -264,7 +264,7 @@ struct disassembly_state {
  * this actually rewrites the code.
  * this is called by the disassembler.
  */
-#ifdef NEW_DIS_ASM
+#if defined(DIS_ASM_VER_239)
 static int do_rewrite(void *data, enum disassembler_style style ATTRIBUTE_UNUSED, const char *fmt, ...)
 #else
 static int do_rewrite(void *data, const char *fmt, ...)
@@ -328,7 +328,7 @@ static void disassemble_and_rewrite(char *code, size_t code_size, int mem_prot)
 	/* add PROT_WRITE to rewrite the code */
 	assert(!mprotect(code, code_size, PROT_WRITE | PROT_READ | PROT_EXEC));
 	disassemble_info disasm_info = { 0 };
-#ifdef NEW_DIS_ASM
+#if defined(DIS_ASM_VER_239)
 	init_disassemble_info(&disasm_info, &s, (fprintf_ftype) printf, do_rewrite);
 #else
 	init_disassemble_info(&disasm_info, &s, do_rewrite);
@@ -339,7 +339,13 @@ static void disassemble_and_rewrite(char *code, size_t code_size, int mem_prot)
 	disasm_info.buffer_length = code_size;
 	disassemble_init_for_target(&disasm_info);
 	disassembler_ftype disasm;
+#if defined(DIS_ASM_VER_229) || defined(DIS_ASM_VER_239)
 	disasm = disassembler(bfd_arch_i386, false, bfd_mach_x86_64, NULL);
+#else
+	bfd _bfd = { .arch_info = bfd_scan_arch("i386"), };
+	assert(_bfd.arch_info);
+	disasm = disassembler(&_bfd);
+#endif
 	s.code = code;
 	while (s.off < code_size)
 		s.off += disasm(s.off, &disasm_info);
