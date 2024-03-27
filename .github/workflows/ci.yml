@@ -1,0 +1,44 @@
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  tests:
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - displayTargetName: ubuntu-20.04
+            runs_on: ubuntu-20.04
+          - displayTargetName: ubuntu-22.04
+            runs_on: ubuntu-22.04
+    timeout-minutes: 100
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      USE_CCACHE: 1
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v2
+      - name: setup
+        run: |
+          sudo sh -c "echo 0 > /proc/sys/vm/mmap_min_addr"
+      - name: install packages
+        run: |
+          sudo apt update -y
+          sudo apt install -y binutils-dev
+
+      - name: build
+        run: |
+          make
+          make -C apps/basic
+      - name: tests
+        run: |
+          LD_PRELOAD=./libzpoline.so LIBZPHOOK=./apps/basic/libzphook_basic.so ls
+#      - name: Setup upterm session
+#        uses: lhotari/action-upterm@v1
