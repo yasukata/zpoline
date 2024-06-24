@@ -12,10 +12,9 @@ CFLAGS += -g -rdynamic
 CFLAGS += -Werror -Wall -Wunused-function
 CFLAGS += -Wextra
 CFLAGS += -shared -fPIC
-
 CFLAGS += -DSUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 
-LD_VERSION = $(shell ld --version | head -1 | awk '{ print $$NF }' | awk -F'-' '{ print $$1 }' | sed 's/\.//')
+LD_VERSION = $(shell ld --version | head -1 | grep -oP '[\d\.]+' | sed 's/\.//' | sed 's/\..*//')
 # differentiate the code according to the library version
 ifeq ($(shell test $(LD_VERSION) -ge 239; echo $$?),0)
   CFLAGS += -DDIS_ASM_VER_239
