@@ -29,6 +29,8 @@
 #include <assert.h>
 #include <sys/syscall.h>
 #include <sys/mman.h>
+#define PACKAGE "1"
+#define PACKAGE_VERSION "1"
 #include <dis-asm.h>
 #include <sched.h>
 #include <dlfcn.h>
