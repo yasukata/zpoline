@@ -14,7 +14,7 @@ CFLAGS += -Wextra
 CFLAGS += -shared -fPIC
 CFLAGS += -DSUPPLEMENTAL__REWRITTEN_ADDR_CHECK
 
-LD_VERSION = $(shell ld --version | head -1 | grep -oP '[\d\.]+' | sed 's/\.//' | sed 's/\..*//')
+LD_VERSION = $(shell ld --version | head -1 | grep -oP '[\d\.]+' | sed 's/\.//' | sed 's/\..*//' | head -1 )
 # differentiate the code according to the library version
 ifeq ($(shell test $(LD_VERSION) -ge 239; echo $$?),0)
   CFLAGS += -DDIS_ASM_VER_239
