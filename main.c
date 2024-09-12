@@ -281,7 +281,7 @@ static int do_rewrite(void *data, const char *fmt, ...)
 	if (strstr(buf, "(%rsp)") && !strncmp(buf, "-", 1)) {
 		int32_t off;
 		sscanf(buf, "%x(%%rsp)", &off);
-		if (-0x78 < off && off < -0x80) {
+		if (-0x78 > off && off >= -0x80) {
 			printf("\x1b[41mthis cannot be handled: %s\x1b[39m\n", buf);
 			assert(0);
 		} else if (off < -0x80) {
