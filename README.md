@@ -66,6 +66,10 @@ To use zpoline, please set 0 to ```/proc/sys/vm/mmap_min_addr```.
 sudo sh -c "echo 0 > /proc/sys/vm/mmap_min_addr"
 ```
 
+After the command above is executed, supposedly, the program in this repository can perform ```mmap``` to allocate a memory region at virtual address 0.
+But, you may still encounter [the failure of ```mmap``` because of SELinux](https://github.com/yasukata/zpoline/issues/21#issue-2597059104).
+You can resolve this issue by disabling SELinux, however, please be aware that the security of your system is reduced if SELinux is disabled, and please disable SELinux **at your own risk**.
+
 ## How to Use
 
 Pleae specify ```apps/basic/libzphook_basic.so``` for the ```LIBZPHOOK``` environment variable, and ```libzpoline.so``` for LD_PRELOAD. The example command is as follows.
