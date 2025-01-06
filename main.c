@@ -366,7 +366,7 @@ static void rewrite_code(void)
 		char buf[4096];
 		while (fgets(buf, sizeof(buf), fp) != NULL) {
 			/* we do not touch stack and vsyscall memory */
-			if (((strstr(buf, "stack") == NULL) && (strstr(buf, "vsyscall") == NULL))) {
+			if (((strstr(buf, "[stack]\n") == NULL) && (strstr(buf, "[vsyscall]\n") == NULL))) {
 				int i = 0;
 				char addr[65] = { 0 };
 				char *c = strtok(buf, " ");
